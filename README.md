@@ -50,6 +50,8 @@ enable = false
 addr = ":443"
 acme_domains = ["proxemby.example.com"]
 acme_email = ""
+# Relative paths are resolved from the proxemby process working directory.
+# Use an absolute path in production, for example "/var/lib/proxemby/acme-cache".
 acme_cache_dir = ".acme-cache"
 
 [proxy]
@@ -79,7 +81,7 @@ Command-line flags:
 | `--tls-addr` | HTTPS listen address when TLS is enabled. |
 | `--acme-domains` | Comma-separated ACME certificate domains. |
 | `--acme-email` | ACME account email. |
-| `--acme-cache-dir` | ACME certificate cache directory. |
+| `--acme-cache-dir` | ACME certificate cache directory. Relative paths are resolved from the proxemby process working directory. |
 | `--playbackinfo-max-bytes` | Maximum PlaybackInfo JSON body size to buffer for URL rewriting. |
 | `--allowed-clients` | Comma-separated client IP/CIDR allowlist, for example `1.2.3.4,192.168.0.0/32`. Empty means unrestricted. |
 | `--trust-proxy-headers` | Use `X-Forwarded-For`/`X-Real-IP` for client IP checks when proxemby is behind a trusted proxy. |
@@ -97,7 +99,7 @@ Environment variables:
 | `PROXEMBY_TLS_ADDR` | no | `:443` | HTTPS listen address when TLS is enabled. |
 | `PROXEMBY_ACME_DOMAINS` | with TLS | | Comma-separated ACME certificate domains. |
 | `PROXEMBY_ACME_EMAIL` | no | | ACME account email. |
-| `PROXEMBY_ACME_CACHE_DIR` | no | `.acme-cache` | ACME certificate cache directory. |
+| `PROXEMBY_ACME_CACHE_DIR` | no | `.acme-cache` | ACME certificate cache directory. Relative paths are resolved from the proxemby process working directory. |
 | `PROXEMBY_ALLOWED_HOSTS` | no | | Comma-separated initial resource proxy host allowlist. |
 | `PROXEMBY_PLAYBACKINFO_MAX_BYTES` | no | `8388608` | Maximum PlaybackInfo JSON body size to buffer for URL rewriting. |
 | `PROXEMBY_ALLOWED_CLIENTS` | no | | Comma-separated client IP/CIDR allowlist, for example `1.2.3.4,192.168.0.0/32`. Empty means unrestricted. |

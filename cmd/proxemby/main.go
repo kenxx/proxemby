@@ -3,8 +3,10 @@ package main
 import (
 	"crypto/tls"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"golang.org/x/crypto/acme/autocert"
@@ -13,7 +15,11 @@ import (
 )
 
 func main() {
-	cfg, err := proxemby.ConfigFromEnv()
+	cfg, err := proxemby.ConfigFromSources(os.Args[1:], os.Environ())
+	if errors.Is(err, flag.ErrHelp) {
+		proxemby.WriteConfigUsage(os.Stdout)
+		return
+	}
 	if err != nil {
 		log.Fatal(err)
 	}

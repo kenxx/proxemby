@@ -1,0 +1,27 @@
+[upstream]
+url = "https://us.emby.com"
+
+[public]
+url = "http://proxemby"
+
+[server]
+http_addr = ":8080"
+
+[tls]
+enable = false
+addr = ":443"
+acme_domains = ["proxemby.example.com"]
+acme_email = ""
+acme_cache_dir = ".acme-cache"
+
+[proxy]
+allowed_hosts = ["vod.us.emby.com", "cdn.example.com"]
+playbackinfo_max_bytes = 8388608
+hide_client = false
+
+[clients]
+allowed = []
+trust_proxy_headers = false
+
+[logging]
+debug = false

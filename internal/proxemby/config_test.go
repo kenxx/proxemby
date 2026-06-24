@@ -41,8 +41,42 @@ func TestConfigFromMapDefaultsAndAllowedHosts(t *testing.T) {
 	if len(cfg.AllowedClients) != 0 {
 		t.Fatalf("AllowedClients length = %d, want 0", len(cfg.AllowedClients))
 	}
+	if cfg.HideClient {
+		t.Fatal("HideClient = true, want false")
+	}
+	if cfg.Debug {
+		t.Fatal("Debug = true, want false")
+	}
 	if len(cfg.AllowedHosts) != 2 {
 		t.Fatalf("AllowedHosts length = %d, want 2", len(cfg.AllowedHosts))
+	}
+}
+
+func TestConfigFromMapDebug(t *testing.T) {
+	cfg, err := ConfigFromMap(map[string]string{
+		"PROXEMBY_UPSTREAM_URL": "https://us.emby.com",
+		"PROXEMBY_PUBLIC_URL":   "http://proxemby",
+		"PROXEMBY_DEBUG":        "true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Debug {
+		t.Fatal("Debug = false, want true")
+	}
+}
+
+func TestConfigFromMapHideClient(t *testing.T) {
+	cfg, err := ConfigFromMap(map[string]string{
+		"PROXEMBY_UPSTREAM_URL": "https://us.emby.com",
+		"PROXEMBY_PUBLIC_URL":   "http://proxemby",
+		"PROXEMBY_HIDE_CLIENT":  "true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HideClient {
+		t.Fatal("HideClient = false, want true")
 	}
 }
 

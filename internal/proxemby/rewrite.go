@@ -14,6 +14,14 @@ type Rewriter struct {
 	registry  *HostRegistry
 }
 
+type RewriteEvent struct {
+	Path      string
+	Original  string
+	Rewritten string
+	Scheme    string
+	Host      string
+}
+
 func NewRewriter(publicURL *url.URL, registry *HostRegistry) *Rewriter {
 	return &Rewriter{
 		publicURL: publicURL,
@@ -21,29 +29,30 @@ func NewRewriter(publicURL *url.URL, registry *HostRegistry) *Rewriter {
 	}
 }
 
-func (r *Rewriter) RewritePlaybackInfo(body []byte) ([]byte, bool, error) {
+func (r *Rewriter) RewritePlaybackInfo(body []byte) ([]byte, []RewriteEvent, error) {
 	if !gjson.ValidBytes(body) {
-		return body, false, nil
+		return body, nil, nil
 	}
 
 	root := gjson.ParseBytes(body)
 	out := append([]byte(nil), body...)
 	paths := collectURLStrings(root, "")
-	changed := false
+	events := make([]RewriteEvent, 0, len(paths))
 	for _, item := range paths {
-		rewritten, ok := r.rewriteURL(item.value)
+		rewritten, event, ok := r.rewriteURL(item.value)
 		if !ok {
 			continue
 		}
+		event.Path = item.path
 		var err error
 		out, err = sjson.SetBytes(out, item.path, rewritten)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, err
 		}
-		changed = true
+		events = append(events, event)
 	}
 
-	return out, changed, nil
+	return out, events, nil
 }
 
 type jsonStringPath struct {
@@ -81,10 +90,10 @@ func collectURLStrings(value gjson.Result, path string) []jsonStringPath {
 	return paths
 }
 
-func (r *Rewriter) rewriteURL(raw string) (string, bool) {
+func (r *Rewriter) rewriteURL(raw string) (string, RewriteEvent, bool) {
 	u, err := url.Parse(raw)
 	if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return "", false
+		return "", RewriteEvent{}, false
 	}
 
 	r.registry.Allow(u.Host, u.Scheme)
@@ -93,7 +102,13 @@ func (r *Rewriter) rewriteURL(raw string) (string, bool) {
 	out.Path = joinURLPath(out.Path, "_proxy", u.Scheme, u.Host, strings.TrimPrefix(u.Path, "/"))
 	out.RawQuery = u.RawQuery
 	out.Fragment = ""
-	return out.String(), true
+	rewritten := out.String()
+	return rewritten, RewriteEvent{
+		Original:  raw,
+		Rewritten: rewritten,
+		Scheme:    u.Scheme,
+		Host:      u.Host,
+	}, true
 }
 
 func isAbsoluteHTTPURL(raw string) bool {

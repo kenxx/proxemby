@@ -31,6 +31,8 @@ Then point the Emby client at `PROXEMBY_PUBLIC_URL`.
 | `PROXEMBY_PLAYBACKINFO_MAX_BYTES` | no | `8388608` | Maximum PlaybackInfo JSON body size to buffer for URL rewriting. |
 | `PROXEMBY_ALLOWED_CLIENTS` | no | | Comma-separated client IP/CIDR allowlist, for example `1.2.3.4,192.168.0.0/32`. Empty means unrestricted. |
 | `PROXEMBY_TRUST_PROXY_HEADERS` | no | `false` | Use `X-Forwarded-For`/`X-Real-IP` for client IP checks when proxemby is behind a trusted proxy. |
+| `PROXEMBY_HIDE_CLIENT` | no | `false` | Do not send `X-Forwarded-*` client/proxy headers to the upstream Emby server. |
+| `PROXEMBY_DEBUG` | no | `false` | Log request method, sanitized path/query, status, bytes, duration, client IP, and target. |
 
 ## Behavior
 
@@ -41,6 +43,8 @@ Then point the Emby client at `PROXEMBY_PUBLIC_URL`.
 - `/_proxy/` only allows hosts discovered from rewritten `PlaybackInfo` URLs or explicitly listed in `PROXEMBY_ALLOWED_HOSTS`.
 - Media/resource proxying is streamed by Go's reverse proxy; only PlaybackInfo JSON is buffered, with a size limit.
 - Client IP allowlisting is disabled by default; set `PROXEMBY_ALLOWED_CLIENTS` to enable it.
+- Set `PROXEMBY_HIDE_CLIENT=true` when the upstream should see requests as coming directly from the proxemby server.
+- Set `PROXEMBY_DEBUG=true` to inspect requests without logging common token query values.
 
 ## Development
 

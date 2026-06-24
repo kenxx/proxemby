@@ -30,6 +30,8 @@ type Config struct {
 	PlaybackInfoMaxBytes int64
 	AllowedClients       []netip.Prefix
 	TrustProxyHeaders    bool
+	HideClient           bool
+	Debug                bool
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -45,6 +47,8 @@ func ConfigFromMap(env map[string]string) (Config, error) {
 		AllowedHosts:         splitCSV(env["PROXEMBY_ALLOWED_HOSTS"]),
 		PlaybackInfoMaxBytes: defaultPlaybackInfoMaxBytes,
 		TrustProxyHeaders:    parseBool(env["PROXEMBY_TRUST_PROXY_HEADERS"]),
+		HideClient:           parseBool(env["PROXEMBY_HIDE_CLIENT"]),
+		Debug:                parseBool(env["PROXEMBY_DEBUG"]),
 	}
 
 	allowedClients, err := parseClientPrefixes(env["PROXEMBY_ALLOWED_CLIENTS"])

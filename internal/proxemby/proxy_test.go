@@ -1,7 +1,9 @@
 package proxemby
 
 import (
+	"bytes"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -200,6 +202,7 @@ func TestServerUsesForwardedForWhenTrusted(t *testing.T) {
 }
 
 func TestServerForwardsNormalRequestsToUpstream(t *testing.T) {
+	var upstreamHost string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/emby/System/Info" {
 			t.Fatalf("path = %q, want /emby/System/Info", r.URL.Path)
@@ -207,8 +210,49 @@ func TestServerForwardsNormalRequestsToUpstream(t *testing.T) {
 		if r.URL.RawQuery != "api_key=secret" {
 			t.Fatalf("query = %q, want api_key=secret", r.URL.RawQuery)
 		}
-		if r.Host == "" {
-			t.Fatal("upstream host was empty")
+		if r.Host != upstreamHost {
+			t.Fatalf("Host = %q, want %q", r.Host, upstreamHost)
+		}
+		if r.Header.Get("X-Forwarded-Host") == "" {
+			t.Fatal("X-Forwarded-Host was empty")
+		}
+		if r.Header.Get("X-Forwarded-For") == "spoofed" {
+			t.Fatal("spoofed X-Forwarded-For was preserved")
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	upstreamHost = upstreamURL.Host
+	publicURL, _ := url.Parse("http://proxemby")
+	server := NewServer(Config{
+		UpstreamURL: upstreamURL,
+		PublicURL:   publicURL,
+	})
+	proxy := httptest.NewServer(server.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, proxy.URL+"/emby/System/Info?api_key=secret", nil)
+	req.Header.Set("Connection", "X-Forwarded-Host")
+	req.Header.Set("X-Forwarded-For", "spoofed")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", body)
+	}
+}
+
+func TestServerHidesClientForwardingHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, header := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "Via"} {
+			if got := r.Header.Get(header); got != "" {
+				t.Fatalf("%s = %q, want empty", header, got)
+			}
 		}
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -219,18 +263,120 @@ func TestServerForwardsNormalRequestsToUpstream(t *testing.T) {
 	server := NewServer(Config{
 		UpstreamURL: upstreamURL,
 		PublicURL:   publicURL,
+		HideClient:  true,
 	})
 	proxy := httptest.NewServer(server.Handler())
 	defer proxy.Close()
 
-	resp, err := http.Get(proxy.URL + "/emby/System/Info?api_key=secret")
+	req, _ := http.NewRequest(http.MethodGet, proxy.URL+"/emby/System/Info", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	req.Header.Set("X-Forwarded-Host", "client.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Forwarded", "for=203.0.113.10")
+	req.Header.Set("Via", "1.1 old-proxy")
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "ok" {
-		t.Fatalf("body = %q, want ok", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestServerDebugLogsSanitizedRequest(t *testing.T) {
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousOutput)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	publicURL, _ := url.Parse("http://proxemby")
+	server := NewServer(Config{
+		UpstreamURL: upstreamURL,
+		PublicURL:   publicURL,
+		Debug:       true,
+	})
+	proxy := httptest.NewServer(server.Handler())
+	defer proxy.Close()
+
+	resp, err := http.Get(proxy.URL + "/emby/System/Info?api_key=secret&token=abc&device=ios")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	text := logs.String()
+	for _, want := range []string{
+		"debug request method=GET",
+		"api_key=redacted",
+		"token=redacted",
+		"device=ios",
+		"status=200",
+		"target=upstream:" + upstream.URL,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("debug log %q missing %q", text, want)
+		}
+	}
+	if strings.Contains(text, "secret") || strings.Contains(text, "token=abc") {
+		t.Fatalf("debug log leaked sensitive query values: %q", text)
+	}
+}
+
+func TestServerDebugLogsPlaybackInfoRewrite(t *testing.T) {
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousOutput)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"Path":"https://vod.us.emby.com/movie.mp4?token=secret"}`)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	publicURL, _ := url.Parse("http://proxemby")
+	server := NewServer(Config{
+		UpstreamURL: upstreamURL,
+		PublicURL:   publicURL,
+		Debug:       true,
+	})
+	proxy := httptest.NewServer(server.Handler())
+	defer proxy.Close()
+
+	resp, err := http.Get(proxy.URL + "/emby/Items/1/PlaybackInfo?api_key=secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	text := logs.String()
+	for _, want := range []string{
+		"debug playbackinfo rewrite path=/emby/Items/1/PlaybackInfo?api_key=redacted count=1",
+		"debug playbackinfo rewrite item json_path=Path scheme=https host=vod.us.emby.com",
+		"from=https://vod.us.emby.com/movie.mp4?token=redacted",
+		"to=http://proxemby/_proxy/https/vod.us.emby.com/movie.mp4?token=redacted",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("debug log %q missing %q", text, want)
+		}
+	}
+	if strings.Contains(text, "token=secret") || strings.Contains(text, "api_key=secret") {
+		t.Fatalf("debug log leaked sensitive query values: %q", text)
 	}
 }
 

@@ -20,12 +20,12 @@ func TestRewritePlaybackInfoRewritesNestedURLStrings(t *testing.T) {
 		"ImageTags": {"Primary": "abc"}
 	}`)
 
-	out, changed, err := rewriter.RewritePlaybackInfo(body)
+	out, events, err := rewriter.RewritePlaybackInfo(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !changed {
-		t.Fatal("changed = false, want true")
+	if len(events) != 2 {
+		t.Fatalf("events length = %d, want 2", len(events))
 	}
 
 	text := string(out)
@@ -48,23 +48,23 @@ func TestRewritePlaybackInfoIgnoresInvalidJSONAndNonURLs(t *testing.T) {
 	publicURL, _ := url.Parse("http://proxemby")
 	rewriter := NewRewriter(publicURL, NewHostRegistry(nil))
 
-	out, changed, err := rewriter.RewritePlaybackInfo([]byte(`not-json`))
+	out, events, err := rewriter.RewritePlaybackInfo([]byte(`not-json`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed {
-		t.Fatal("changed = true, want false")
+	if len(events) != 0 {
+		t.Fatalf("events length = %d, want 0", len(events))
 	}
 	if string(out) != "not-json" {
 		t.Fatalf("out = %q, want not-json", out)
 	}
 
-	out, changed, err = rewriter.RewritePlaybackInfo([]byte(`{"Text":"ftp://example.com/file","Name":"plain"}`))
+	out, events, err = rewriter.RewritePlaybackInfo([]byte(`{"Text":"ftp://example.com/file","Name":"plain"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed {
-		t.Fatal("changed = true, want false")
+	if len(events) != 0 {
+		t.Fatalf("events length = %d, want 0", len(events))
 	}
 	if string(out) != `{"Text":"ftp://example.com/file","Name":"plain"}` {
 		t.Fatalf("unexpected rewrite: %s", out)

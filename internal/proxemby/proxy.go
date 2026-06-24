@@ -43,26 +43,45 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(resourcePrefix, http.HandlerFunc(s.handleResourceProxy))
 	mux.Handle("/", s.upstreamProxy)
-	return newClientFilter(s.cfg.AllowedClients, s.cfg.TrustProxyHeaders, mux)
+	handler := newClientFilter(s.cfg.AllowedClients, s.cfg.TrustProxyHeaders, mux)
+	return newDebugLogger(s.cfg.Debug, s.upstreamTarget, handler)
 }
 
 func (s *Server) newUpstreamProxy() *httputil.ReverseProxy {
-	proxy := httputil.NewSingleHostReverseProxy(s.upstreamTarget)
-	proxy.Transport = noCompressionTransport()
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		playbackInfo := isPlaybackInfoPath(req.URL.Path)
-		originalHost := req.Host
-		originalDirector(req)
-		req.Host = s.upstreamTarget.Host
-		req.Header.Set("X-Forwarded-Host", originalHost)
-		if playbackInfo {
-			req.Header.Del("Accept-Encoding")
-		}
+	proxy := &httputil.ReverseProxy{
+		Transport: noCompressionTransport(),
+		Rewrite: func(req *httputil.ProxyRequest) {
+			playbackInfo := isPlaybackInfoPath(req.In.URL.Path)
+			req.SetURL(s.upstreamTarget)
+			req.Out.Host = s.upstreamTarget.Host
+			if s.cfg.HideClient {
+				deleteProxyIdentityHeaders(req.Out.Header)
+			} else {
+				req.SetXForwarded()
+			}
+			if playbackInfo {
+				req.Out.Header.Del("Accept-Encoding")
+			}
+		},
+		ModifyResponse: s.modifyUpstreamResponse,
+		ErrorLog:       log.Default(),
 	}
-	proxy.ModifyResponse = s.modifyUpstreamResponse
-	proxy.ErrorLog = log.Default()
 	return proxy
+}
+
+func deleteProxyIdentityHeaders(header http.Header) {
+	for _, name := range []string{
+		"Forwarded",
+		"Via",
+		"X-Forwarded-For",
+		"X-Forwarded-Host",
+		"X-Forwarded-Proto",
+		"X-Forwarded-Protocol",
+		"X-Forwarded-Ssl",
+		"X-Real-IP",
+	} {
+		header.Del(name)
+	}
 }
 
 func (s *Server) modifyUpstreamResponse(resp *http.Response) error {
@@ -74,13 +93,14 @@ func (s *Server) modifyUpstreamResponse(resp *http.Response) error {
 	if err != nil {
 		return err
 	}
-	rewritten, changed, err := s.rewriter.RewritePlaybackInfo(body)
+	rewritten, events, err := s.rewriter.RewritePlaybackInfo(body)
 	if err != nil {
 		return err
 	}
-	if !changed {
+	if len(events) == 0 {
 		rewritten = body
 	}
+	s.logRewriteEvents(resp.Request, events)
 
 	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
 	resp.ContentLength = int64(len(rewritten))
@@ -89,20 +109,41 @@ func (s *Server) modifyUpstreamResponse(resp *http.Response) error {
 	return nil
 }
 
+func (s *Server) logRewriteEvents(req *http.Request, events []RewriteEvent) {
+	if !s.cfg.Debug {
+		return
+	}
+	log.Printf(
+		"debug playbackinfo rewrite path=%s count=%d",
+		sanitizeRequestURI(req.URL),
+		len(events),
+	)
+	for _, event := range events {
+		log.Printf(
+			"debug playbackinfo rewrite item json_path=%s scheme=%s host=%s from=%s to=%s",
+			event.Path,
+			event.Scheme,
+			event.Host,
+			sanitizeURLString(event.Original),
+			sanitizeURLString(event.Rewritten),
+		)
+	}
+}
+
 func (s *Server) newResourceProxy() *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
 		Transport: http.DefaultTransport,
-		Director: func(req *http.Request) {
-			target, _ := req.Context().Value(resourceTargetKey{}).(*url.URL)
+		Rewrite: func(req *httputil.ProxyRequest) {
+			target, _ := req.In.Context().Value(resourceTargetKey{}).(*url.URL)
 			if target == nil {
 				return
 			}
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.URL.Path = target.Path
-			req.URL.RawPath = target.RawPath
-			req.URL.RawQuery = target.RawQuery
-			req.Host = target.Host
+			req.Out.URL.Scheme = target.Scheme
+			req.Out.URL.Host = target.Host
+			req.Out.URL.Path = target.Path
+			req.Out.URL.RawPath = target.RawPath
+			req.Out.URL.RawQuery = target.RawQuery
+			req.Out.Host = target.Host
 		},
 		ErrorLog: log.Default(),
 	}

@@ -1,0 +1,60 @@
+# Example proxemby config.
+# By default proxemby looks for /etc/proxemby/proxemby.toml.
+# Environment variables and command-line flags override values in this file.
+
+[[routes]]
+# The real Emby server proxemby forwards client traffic to.
+upstream_url = "https://us.emby.com"
+
+# The URL Emby clients use to reach proxemby. Incoming requests are routed by
+# this host, and rewritten media/resource URLs are generated from this base URL.
+public_url = "https://proxemby.example.com"
+
+# Optional certificate domain for this route. If empty, public_url's hostname is
+# used for ACME when TLS is enabled.
+acme_domain = "proxemby.example.com"
+
+[[routes]]
+upstream_url = "https://us2.emby.com"
+public_url = "https://proxemby2.example.com"
+
+[server]
+# HTTP listen address. Use ":8080" to listen on all interfaces.
+http_addr = ":8080"
+
+[tls]
+# Enable built-in HTTPS with ACME/Let's Encrypt.
+enable = false
+
+# HTTPS listen address used when TLS is enabled.
+addr = ":443"
+
+# Optional ACME account email.
+acme_email = ""
+
+# Directory used to cache ACME certificates. Relative paths are resolved from
+# the proxemby process working directory. Use an absolute path in production,
+# for example "/var/lib/proxemby/acme-cache".
+acme_cache_dir = ".acme-cache"
+
+[proxy]
+# Hosts that are allowed for the /_proxy/ resource endpoint before they are
+# discovered from rewritten PlaybackInfo responses.
+allowed_hosts = ["vod.us.emby.com", "cdn.example.com"]
+
+# Maximum PlaybackInfo JSON response size to buffer while rewriting URLs.
+playbackinfo_max_bytes = 8388608
+
+# Set true to avoid forwarding X-Forwarded-* client identity headers upstream.
+hide_client = false
+
+[clients]
+# Optional client IP/CIDR allowlist. Empty means unrestricted.
+allowed = []
+
+# Set true only when proxemby is behind a trusted reverse proxy.
+trust_proxy_headers = false
+
+[logging]
+# Enables request and rewrite debug logging with token query values sanitized.
+debug = false

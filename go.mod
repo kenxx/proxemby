@@ -3,6 +3,7 @@ module proxemby
 go 1.26.4
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
 	golang.org/x/crypto v0.53.0

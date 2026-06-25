@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -18,7 +19,12 @@ const resourcePrefix = "/_proxy/"
 var errResponseTooLarge = errors.New("response body exceeds limit")
 
 type Server struct {
+	handlers map[string]http.Handler
+}
+
+type routeProxy struct {
 	cfg            Config
+	route          Route
 	registry       *HostRegistry
 	rewriter       *Rewriter
 	upstreamProxy  *httputil.ReverseProxy
@@ -27,19 +33,53 @@ type Server struct {
 }
 
 func NewServer(cfg Config) *Server {
-	registry := NewHostRegistry(cfg.AllowedHosts)
 	server := &Server{
-		cfg:            cfg,
-		registry:       registry,
-		rewriter:       NewRewriter(cfg.PublicURL, registry),
-		upstreamTarget: cfg.UpstreamURL,
+		handlers: make(map[string]http.Handler, len(cfg.Routes)),
 	}
-	server.upstreamProxy = server.newUpstreamProxy()
-	server.resourceProxy = server.newResourceProxy()
+	for _, route := range cfg.Routes {
+		proxy := newRouteProxy(cfg, route)
+		server.handlers[strings.ToLower(route.PublicURL.Hostname())] = proxy.Handler()
+	}
 	return server
 }
 
 func (s *Server) Handler() http.Handler {
+	return http.HandlerFunc(s.ServeHTTP)
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	host := requestHostname(req.Host)
+	handler, ok := s.handlers[strings.ToLower(host)]
+	if !ok {
+		http.NotFound(w, req)
+		return
+	}
+	handler.ServeHTTP(w, req)
+}
+
+func requestHostname(host string) string {
+	host = strings.TrimSpace(host)
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		return strings.Trim(parsed, "[]")
+	}
+	return strings.Trim(host, "[]")
+}
+
+func newRouteProxy(cfg Config, route Route) *routeProxy {
+	registry := NewHostRegistry(cfg.AllowedHosts)
+	proxy := &routeProxy{
+		cfg:            cfg,
+		route:          route,
+		registry:       registry,
+		rewriter:       NewRewriter(route.PublicURL, registry),
+		upstreamTarget: route.UpstreamURL,
+	}
+	proxy.upstreamProxy = proxy.newUpstreamProxy()
+	proxy.resourceProxy = proxy.newResourceProxy()
+	return proxy
+}
+
+func (s *routeProxy) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(resourcePrefix, http.HandlerFunc(s.handleResourceProxy))
 	mux.Handle("/", s.upstreamProxy)
@@ -47,7 +87,7 @@ func (s *Server) Handler() http.Handler {
 	return newDebugLogger(s.cfg.Debug, s.upstreamTarget, handler)
 }
 
-func (s *Server) newUpstreamProxy() *httputil.ReverseProxy {
+func (s *routeProxy) newUpstreamProxy() *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
 		Transport: noCompressionTransport(),
 		Rewrite: func(req *httputil.ProxyRequest) {
@@ -84,7 +124,7 @@ func deleteProxyIdentityHeaders(header http.Header) {
 	}
 }
 
-func (s *Server) modifyUpstreamResponse(resp *http.Response) error {
+func (s *routeProxy) modifyUpstreamResponse(resp *http.Response) error {
 	if !isPlaybackInfoPath(resp.Request.URL.Path) || !isJSONContentType(resp.Header.Get("Content-Type")) {
 		return nil
 	}
@@ -109,7 +149,7 @@ func (s *Server) modifyUpstreamResponse(resp *http.Response) error {
 	return nil
 }
 
-func (s *Server) logRewriteEvents(req *http.Request, events []RewriteEvent) {
+func (s *routeProxy) logRewriteEvents(req *http.Request, events []RewriteEvent) {
 	if !s.cfg.Debug {
 		return
 	}
@@ -130,7 +170,7 @@ func (s *Server) logRewriteEvents(req *http.Request, events []RewriteEvent) {
 	}
 }
 
-func (s *Server) newResourceProxy() *httputil.ReverseProxy {
+func (s *routeProxy) newResourceProxy() *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
 		Transport: http.DefaultTransport,
 		Rewrite: func(req *httputil.ProxyRequest) {
@@ -160,7 +200,7 @@ func noCompressionTransport() http.RoundTripper {
 	return clone
 }
 
-func (s *Server) handleResourceProxy(w http.ResponseWriter, req *http.Request) {
+func (s *routeProxy) handleResourceProxy(w http.ResponseWriter, req *http.Request) {
 	scheme, remainder, ok := strings.Cut(strings.TrimPrefix(req.URL.Path, resourcePrefix), "/")
 	if !ok || !isHTTPProxyScheme(scheme) {
 		http.Error(w, "missing or invalid proxied resource scheme", http.StatusBadRequest)

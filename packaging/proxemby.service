@@ -1,0 +1,15 @@
+[Unit]
+Description=proxemby Emby edge proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/proxemby --config /etc/proxemby/proxemby.toml
+WorkingDirectory=/var/lib/proxemby
+StateDirectory=proxemby
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

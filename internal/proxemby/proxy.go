@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -20,6 +21,7 @@ var errResponseTooLarge = errors.New("response body exceeds limit")
 
 type Server struct {
 	handlers map[string]http.Handler
+	logger   *slog.Logger
 }
 
 type routeProxy struct {
@@ -30,14 +32,24 @@ type routeProxy struct {
 	upstreamProxy  *httputil.ReverseProxy
 	resourceProxy  *httputil.ReverseProxy
 	upstreamTarget *url.URL
+	logger         *slog.Logger
 }
 
 func NewServer(cfg Config) *Server {
+	return NewServerWithLogger(cfg, slog.Default())
+}
+
+func NewServerWithLogger(cfg Config, logger *slog.Logger) *Server {
 	server := &Server{
 		handlers: make(map[string]http.Handler, len(cfg.Routes)),
+		logger:   logger,
 	}
 	for _, route := range cfg.Routes {
-		proxy := newRouteProxy(cfg, route)
+		proxy := newRouteProxy(cfg, route, logger.With(
+			"route", route.PublicURL.Hostname(),
+			"public_url", route.PublicURL.String(),
+			"upstream_url", route.UpstreamURL.String(),
+		))
 		server.handlers[strings.ToLower(route.PublicURL.Hostname())] = proxy.Handler()
 	}
 	return server
@@ -51,6 +63,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	host := requestHostname(req.Host)
 	handler, ok := s.handlers[strings.ToLower(host)]
 	if !ok {
+		s.logger.Debug("route miss", "host", req.Host, "path", sanitizeRequestURI(req.URL))
 		http.NotFound(w, req)
 		return
 	}
@@ -65,7 +78,7 @@ func requestHostname(host string) string {
 	return strings.Trim(host, "[]")
 }
 
-func newRouteProxy(cfg Config, route Route) *routeProxy {
+func newRouteProxy(cfg Config, route Route, logger *slog.Logger) *routeProxy {
 	registry := NewHostRegistry(cfg.AllowedHosts)
 	proxy := &routeProxy{
 		cfg:            cfg,
@@ -73,6 +86,7 @@ func newRouteProxy(cfg Config, route Route) *routeProxy {
 		registry:       registry,
 		rewriter:       NewRewriter(route.PublicURL, registry),
 		upstreamTarget: route.UpstreamURL,
+		logger:         logger,
 	}
 	proxy.upstreamProxy = proxy.newUpstreamProxy()
 	proxy.resourceProxy = proxy.newResourceProxy()
@@ -83,8 +97,8 @@ func (s *routeProxy) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(resourcePrefix, http.HandlerFunc(s.handleResourceProxy))
 	mux.Handle("/", s.upstreamProxy)
-	handler := newClientFilter(s.cfg.AllowedClients, s.cfg.TrustProxyHeaders, mux)
-	return newDebugLogger(s.cfg.Debug, s.upstreamTarget, handler)
+	handler := newClientFilter(s.cfg.AllowedClients, s.cfg.TrustProxyHeaders, s.logger, mux)
+	return newRequestLogger(s.logger, s.upstreamTarget, s.cfg.TrustProxyHeaders, handler)
 }
 
 func (s *routeProxy) newUpstreamProxy() *httputil.ReverseProxy {
@@ -95,6 +109,7 @@ func (s *routeProxy) newUpstreamProxy() *httputil.ReverseProxy {
 			req.SetURL(s.upstreamTarget)
 			req.Out.Host = s.upstreamTarget.Host
 			if s.cfg.HideClient {
+				s.logger.Debug("upstream request hides client identity headers", "path", sanitizeRequestURI(req.In.URL), "target", s.upstreamTarget.String())
 				deleteProxyIdentityHeaders(req.Out.Header)
 			} else {
 				req.SetXForwarded()
@@ -104,7 +119,7 @@ func (s *routeProxy) newUpstreamProxy() *httputil.ReverseProxy {
 			}
 		},
 		ModifyResponse: s.modifyUpstreamResponse,
-		ErrorLog:       log.Default(),
+		ErrorLog:       log.New(slogWriter{logger: s.logger, level: slog.LevelError}, "", 0),
 	}
 	return proxy
 }
@@ -131,6 +146,9 @@ func (s *routeProxy) modifyUpstreamResponse(resp *http.Response) error {
 
 	body, err := readResponseBody(resp, s.cfg.PlaybackInfoMaxBytes)
 	if err != nil {
+		if errors.Is(err, errResponseTooLarge) {
+			s.logger.Warn("playbackinfo response rejected", "reason", "response_too_large", "max_bytes", s.cfg.PlaybackInfoMaxBytes, "path", sanitizeRequestURI(resp.Request.URL))
+		}
 		return err
 	}
 	rewritten, events, err := s.rewriter.RewritePlaybackInfo(body)
@@ -150,22 +168,15 @@ func (s *routeProxy) modifyUpstreamResponse(resp *http.Response) error {
 }
 
 func (s *routeProxy) logRewriteEvents(req *http.Request, events []RewriteEvent) {
-	if !s.cfg.Debug {
-		return
-	}
-	log.Printf(
-		"debug playbackinfo rewrite path=%s count=%d",
-		sanitizeRequestURI(req.URL),
-		len(events),
-	)
+	s.logger.Debug("playbackinfo rewrite", "path", sanitizeRequestURI(req.URL), "count", len(events))
 	for _, event := range events {
-		log.Printf(
-			"debug playbackinfo rewrite item json_path=%s scheme=%s host=%s from=%s to=%s",
-			event.Path,
-			event.Scheme,
-			event.Host,
-			sanitizeURLString(event.Original),
-			sanitizeURLString(event.Rewritten),
+		s.logger.Debug(
+			"playbackinfo rewrite item",
+			"json_path", event.Path,
+			"scheme", event.Scheme,
+			"host", event.Host,
+			"from", sanitizeURLString(event.Original),
+			"to", sanitizeURLString(event.Rewritten),
 		)
 	}
 }
@@ -185,7 +196,7 @@ func (s *routeProxy) newResourceProxy() *httputil.ReverseProxy {
 			req.Out.URL.RawQuery = target.RawQuery
 			req.Out.Host = target.Host
 		},
-		ErrorLog: log.Default(),
+		ErrorLog: log.New(slogWriter{logger: s.logger, level: slog.LevelError}, "", 0),
 	}
 	return proxy
 }
@@ -203,19 +214,23 @@ func noCompressionTransport() http.RoundTripper {
 func (s *routeProxy) handleResourceProxy(w http.ResponseWriter, req *http.Request) {
 	scheme, remainder, ok := strings.Cut(strings.TrimPrefix(req.URL.Path, resourcePrefix), "/")
 	if !ok || !isHTTPProxyScheme(scheme) {
+		s.logResourceProxyDecision(req, false, "invalid_scheme", scheme, "")
 		http.Error(w, "missing or invalid proxied resource scheme", http.StatusBadRequest)
 		return
 	}
 	host, rest, ok := strings.Cut(remainder, "/")
 	if !ok || host == "" {
+		s.logResourceProxyDecision(req, false, "missing_host", scheme, host)
 		http.Error(w, "missing proxied resource host", http.StatusBadRequest)
 		return
 	}
 	_, allowed := s.registry.Lookup(host)
 	if !allowed {
+		s.logResourceProxyDecision(req, false, "host_not_allowed", scheme, host)
 		http.Error(w, "proxied resource host is not allowed", http.StatusForbidden)
 		return
 	}
+	s.logResourceProxyDecision(req, true, "", scheme, host)
 
 	target := &url.URL{
 		Scheme:   scheme,
@@ -226,6 +241,21 @@ func (s *routeProxy) handleResourceProxy(w http.ResponseWriter, req *http.Reques
 
 	ctx := withResourceTarget(req.Context(), target)
 	s.resourceProxy.ServeHTTP(w, req.WithContext(ctx))
+}
+
+func (s *routeProxy) logResourceProxyDecision(req *http.Request, allowed bool, reason, scheme, host string) {
+	attrs := []any{
+		"allowed", allowed,
+		"reason", reason,
+		"scheme", scheme,
+		"host", host,
+		"path", sanitizeRequestURI(req.URL),
+	}
+	if allowed {
+		s.logger.Debug("resource proxy decision", attrs...)
+		return
+	}
+	s.logger.Warn("resource proxy rejected request", attrs...)
 }
 
 func isHTTPProxyScheme(scheme string) bool {

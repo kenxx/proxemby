@@ -69,9 +69,16 @@ to a missing or invalid config file, startup fails.
 Example TOML config:
 
 ```toml
+# Required. Add one or more routes.
 [[routes]]
+# Required. The real Emby server proxemby forwards client traffic to.
 upstream_url = "https://us.emby.com"
+
+# Required. The URL Emby clients use to reach proxemby. Incoming requests are
+# routed by this host, and rewritten media/resource URLs use this base URL.
 public_url = "https://proxemby.example.com"
+
+# Optional. Defaults to the public_url hostname. Used for ACME when TLS is enabled.
 acme_domain = "proxemby.example.com"
 
 [[routes]]
@@ -79,27 +86,55 @@ upstream_url = "https://us2.emby.com"
 public_url = "https://proxemby2.example.com"
 
 [server]
+# Optional. Default: ":8080".
 http_addr = ":8080"
 
 [tls]
+# Optional. Default: false.
 enable = false
+
+# Optional. Default: ":443".
 addr = ":443"
+
+# Optional. Default: empty.
 acme_email = ""
-# Relative paths are resolved from the proxemby process working directory.
+
+# Optional. Default: ".acme-cache". Relative paths are resolved from the
+# proxemby process working directory.
 # Use an absolute path in production, for example "/var/lib/proxemby/acme-cache".
 acme_cache_dir = ".acme-cache"
 
 [proxy]
+# Optional. Default: [].
+# Hosts discovered from rewritten PlaybackInfo responses are allowed automatically.
 allowed_hosts = ["vod.us.emby.com", "cdn.example.com"]
+
+# Optional. Default: 8388608.
 playbackinfo_max_bytes = 8388608
+
+# Optional. Default: false.
 hide_client = false
 
 [clients]
+# Optional. Default: [].
 allowed = ["1.2.3.4", "192.168.0.0/24"]
+
+# Optional. Default: false.
 trust_proxy_headers = false
 
 [logging]
-debug = false
+# Optional. Default: "info". Values: "debug", "info", "warn", "error".
+level = "info"
+
+# Optional. Default: "text". Values: "text", "json".
+format = "text"
+
+# Optional. Default: true. Set false to remove the time field from log lines.
+time = true
+
+# Optional legacy alias. If true, this is the same as level = "debug".
+# If both debug and level are set, level wins.
+# debug = false
 ```
 
 Command-line flags:
@@ -110,7 +145,7 @@ Command-line flags:
 | `--route` | Route as `upstream_url,public_url[,acme_domain]`; may be repeated and may contain semicolon-separated routes. |
 | `-h`, `--http-addr` | HTTP listen address. |
 | `-a`, `--allowed-hosts` | Comma-separated initial resource proxy host allowlist. |
-| `-d`, `--debug` | Log request method, sanitized path/query, status, bytes, duration, client IP, and target. |
+| `-d`, `--debug` | Legacy alias for `--log-level debug`. |
 | `--tls-enable` | Enable built-in HTTPS with ACME. |
 | `--tls-addr` | HTTPS listen address when TLS is enabled. |
 | `--acme-email` | ACME account email. |
@@ -119,6 +154,9 @@ Command-line flags:
 | `--allowed-clients` | Comma-separated client IP/CIDR allowlist, for example `1.2.3.4,192.168.0.0/32`. Empty means unrestricted. |
 | `--trust-proxy-headers` | Use `X-Forwarded-For`/`X-Real-IP` for client IP checks when proxemby is behind a trusted proxy. |
 | `--hide-client` | Do not send `X-Forwarded-*` client/proxy headers to the upstream Emby server. |
+| `--log-level` | Log level: `debug`, `info`, `warn`, or `error`. |
+| `--log-format` | Log format: `text` or `json`. |
+| `--log-time` | Include time in log output. Use `--log-time=false` to disable. |
 | `--help` | Show command-line help. |
 
 Environment variables:
@@ -136,7 +174,10 @@ Environment variables:
 | `PROXEMBY_ALLOWED_CLIENTS` | no | | Comma-separated client IP/CIDR allowlist, for example `1.2.3.4,192.168.0.0/32`. Empty means unrestricted. |
 | `PROXEMBY_TRUST_PROXY_HEADERS` | no | `false` | Use `X-Forwarded-For`/`X-Real-IP` for client IP checks when proxemby is behind a trusted proxy. |
 | `PROXEMBY_HIDE_CLIENT` | no | `false` | Do not send `X-Forwarded-*` client/proxy headers to the upstream Emby server. |
-| `PROXEMBY_DEBUG` | no | `false` | Log request method, sanitized path/query, status, bytes, duration, client IP, and target. |
+| `PROXEMBY_LOG_LEVEL` | no | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
+| `PROXEMBY_LOG_FORMAT` | no | `text` | Log format: `text` or `json`. |
+| `PROXEMBY_LOG_TIME` | no | `true` | Include time in log output. |
+| `PROXEMBY_DEBUG` | no | `false` | Legacy alias for `PROXEMBY_LOG_LEVEL=debug`. |
 
 ## Behavior
 
@@ -149,7 +190,7 @@ Environment variables:
 - TLS ACME certificate domains come from each route's `acme_domain`; if omitted, the route's `public_url` hostname is used.
 - Client IP allowlisting is disabled by default; set `PROXEMBY_ALLOWED_CLIENTS` to enable it.
 - Set `PROXEMBY_HIDE_CLIENT=true` when the upstream should see requests as coming directly from the proxemby server.
-- Set `PROXEMBY_DEBUG=true` to inspect requests without logging common token query values.
+- Set `PROXEMBY_LOG_LEVEL=debug` to inspect requests and rule decisions without logging common token query values.
 
 ## Development
 

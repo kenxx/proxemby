@@ -3,6 +3,7 @@ package proxemby
 import (
 	"errors"
 	"flag"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,8 +55,14 @@ func TestConfigFromMapDefaultsAndAllowedHosts(t *testing.T) {
 	if cfg.HideClient {
 		t.Fatal("HideClient = true, want false")
 	}
-	if cfg.Debug {
-		t.Fatal("Debug = true, want false")
+	if cfg.Logging.Level != slog.LevelInfo {
+		t.Fatalf("Log level = %v, want info", cfg.Logging.Level)
+	}
+	if cfg.Logging.Format != "text" {
+		t.Fatalf("Log format = %q, want text", cfg.Logging.Format)
+	}
+	if !cfg.Logging.Time {
+		t.Fatal("Log time = false, want true")
 	}
 	if len(cfg.AllowedHosts) != 2 {
 		t.Fatalf("AllowedHosts length = %d, want 2", len(cfg.AllowedHosts))
@@ -83,16 +90,36 @@ func TestConfigFromMapParsesMultipleRoutes(t *testing.T) {
 	}
 }
 
-func TestConfigFromMapDebug(t *testing.T) {
+func TestConfigFromMapLogging(t *testing.T) {
 	cfg, err := ConfigFromMap(map[string]string{
+		"PROXEMBY_ROUTE":      "https://us.emby.com,http://proxemby",
+		"PROXEMBY_DEBUG":      "true",
+		"PROXEMBY_LOG_LEVEL":  "warn",
+		"PROXEMBY_LOG_FORMAT": "json",
+		"PROXEMBY_LOG_TIME":   "false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Logging.Level != slog.LevelWarn {
+		t.Fatalf("Log level = %v, want warn", cfg.Logging.Level)
+	}
+	if cfg.Logging.Format != "json" {
+		t.Fatalf("Log format = %q, want json", cfg.Logging.Format)
+	}
+	if cfg.Logging.Time {
+		t.Fatal("Log time = true, want false")
+	}
+
+	cfg, err = ConfigFromMap(map[string]string{
 		"PROXEMBY_ROUTE": "https://us.emby.com,http://proxemby",
 		"PROXEMBY_DEBUG": "true",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Debug {
-		t.Fatal("Debug = false, want true")
+	if cfg.Logging.Level != slog.LevelDebug {
+		t.Fatalf("legacy debug log level = %v, want debug", cfg.Logging.Level)
 	}
 }
 
@@ -224,6 +251,9 @@ trust_proxy_headers = true
 
 [logging]
 debug = true
+level = "error"
+format = "json"
+time = false
 `)
 
 	cfg, err := ConfigFromSources([]string{"--config", path}, nil)
@@ -257,8 +287,8 @@ debug = true
 	if len(cfg.AllowedClients) != 2 || !cfg.TrustProxyHeaders {
 		t.Fatalf("client config = allowed:%v trust:%v", cfg.AllowedClients, cfg.TrustProxyHeaders)
 	}
-	if !cfg.HideClient || !cfg.Debug {
-		t.Fatalf("HideClient/Debug = %v/%v, want true/true", cfg.HideClient, cfg.Debug)
+	if !cfg.HideClient || cfg.Logging.Level != slog.LevelError || cfg.Logging.Format != "json" || cfg.Logging.Time {
+		t.Fatalf("HideClient/logging = %v/%v/%q/%v, want true/error/json/false", cfg.HideClient, cfg.Logging.Level, cfg.Logging.Format, cfg.Logging.Time)
 	}
 }
 
@@ -272,7 +302,7 @@ public_url = "http://toml-public"
 http_addr = ":8081"
 
 [logging]
-debug = false
+level = "warn"
 `)
 
 	cfg, err := ConfigFromSources([]string{
@@ -280,6 +310,9 @@ debug = false
 		"--route", "https://cli.emby.com,http://cli-public",
 		"--http-addr", ":9090",
 		"--debug",
+		"--log-level", "error",
+		"--log-format", "json",
+		"--log-time=false",
 	}, []string{
 		"PROXEMBY_ROUTE=https://env.emby.com,http://env-public",
 		"PROXEMBY_HTTP_ADDR=:8082",
@@ -297,8 +330,14 @@ debug = false
 	if cfg.HTTPAddr != ":9090" {
 		t.Fatalf("HTTPAddr = %q, want CLI value", cfg.HTTPAddr)
 	}
-	if !cfg.Debug {
-		t.Fatal("Debug = false, want CLI true")
+	if cfg.Logging.Level != slog.LevelError {
+		t.Fatalf("Log level = %v, want CLI error", cfg.Logging.Level)
+	}
+	if cfg.Logging.Format != "json" {
+		t.Fatalf("Log format = %q, want CLI json", cfg.Logging.Format)
+	}
+	if cfg.Logging.Time {
+		t.Fatal("Log time = true, want CLI false")
 	}
 }
 
@@ -331,8 +370,8 @@ public_url = "http://toml-public"
 	if len(cfg.AllowedHosts) != 2 {
 		t.Fatalf("AllowedHosts length = %d, want 2", len(cfg.AllowedHosts))
 	}
-	if !cfg.Debug {
-		t.Fatal("Debug = false, want true")
+	if cfg.Logging.Level != slog.LevelDebug {
+		t.Fatalf("Log level = %v, want debug", cfg.Logging.Level)
 	}
 }
 
@@ -367,6 +406,8 @@ func TestConfigFromSourcesValidationErrors(t *testing.T) {
 		{"--route", "https://us.emby.com,http://same.example.com;https://us2.emby.com,http://same.example.com"},
 		{"--route", "https://us.emby.com,http://proxemby", "--allowed-clients", "not-an-ip"},
 		{"--route", "https://us.emby.com,http://proxemby", "--playbackinfo-max-bytes", "0"},
+		{"--route", "https://us.emby.com,http://proxemby", "--log-level", "verbose"},
+		{"--route", "https://us.emby.com,http://proxemby", "--log-format", "plain"},
 		{"-u", "https://us.emby.com", "-p", "http://proxemby"},
 	} {
 		_, err = ConfigFromSources(args, nil)

@@ -4,7 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -21,10 +21,20 @@ func main() {
 		return
 	}
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	logger, err := proxemby.NewLogger(cfg.Logging, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
-	server := proxemby.NewServer(cfg)
+	for _, route := range cfg.Routes {
+		logger.Info("proxemby route configured", "public_url", route.PublicURL.String(), "upstream_url", route.UpstreamURL.String(), "acme_domain", route.ACMEDomain)
+	}
+
+	server := proxemby.NewServerWithLogger(cfg, logger)
 	handler := server.Handler()
 	httpHandler := handler
 
@@ -36,13 +46,14 @@ func main() {
 			Cache:      autocert.DirCache(cfg.ACMECacheDir),
 			Email:      strings.TrimSpace(cfg.ACMEEmail),
 		}
+		logger.Info("proxemby tls acme configured", "domains", cfg.ACMEDomains, "cache_dir", cfg.ACMECacheDir)
 		httpHandler = manager.HTTPHandler(handler)
 		tlsConfig = &tls.Config{GetCertificate: manager.GetCertificate}
 	}
 
 	errCh := make(chan error, 2)
 	go func() {
-		log.Printf("proxemby listening on http://%s", cfg.HTTPAddr)
+		logger.Info("proxemby listening", "scheme", "http", "addr", cfg.HTTPAddr)
 		errCh <- http.ListenAndServe(cfg.HTTPAddr, httpHandler)
 	}()
 
@@ -53,12 +64,13 @@ func main() {
 				Handler:   handler,
 				TLSConfig: tlsConfig,
 			}
-			log.Printf("proxemby listening on https://%s", cfg.TLSAddr)
+			logger.Info("proxemby listening", "scheme", "https", "addr", cfg.TLSAddr)
 			errCh <- tlsServer.ListenAndServeTLS("", "")
 		}()
 	}
 
 	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		logger.Error("proxemby server failed", "error", err)
+		os.Exit(1)
 	}
 }

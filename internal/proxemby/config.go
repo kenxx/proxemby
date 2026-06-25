@@ -35,7 +35,7 @@ type Config struct {
 	AllowedClients       []netip.Prefix
 	TrustProxyHeaders    bool
 	HideClient           bool
-	Debug                bool
+	Logging              LoggingConfig
 }
 
 type Route struct {
@@ -105,7 +105,7 @@ Options:
       --route ROUTE                  Route as upstream_url,public_url[,acme_domain]; may be repeated
   -h, --http-addr ADDR               HTTP listen address
   -a, --allowed-hosts HOSTS          Comma-separated resource proxy host allowlist
-  -d, --debug                        Enable debug logging
+  -d, --debug                        Enable debug logging (same as --log-level debug)
       --tls-enable                   Enable built-in HTTPS with ACME
       --tls-addr ADDR                HTTPS listen address
       --acme-email EMAIL             ACME account email
@@ -114,6 +114,9 @@ Options:
       --allowed-clients CLIENTS      Comma-separated client IP/CIDR allowlist
       --trust-proxy-headers          Trust X-Forwarded-For/X-Real-IP for client checks
       --hide-client                  Hide client identity headers from upstream
+      --log-level LEVEL              Log level: debug, info, warn, or error
+      --log-format FORMAT            Log format: text or json
+      --log-time                     Include time in log output
       --help                         Show this help
 `)
 }
@@ -130,7 +133,9 @@ type configValues struct {
 	AllowedClients       []string
 	TrustProxyHeaders    bool
 	HideClient           bool
-	Debug                bool
+	LogLevel             string
+	LogFormat            string
+	LogTime              bool
 }
 
 type routeValues struct {
@@ -152,6 +157,9 @@ type rawConfig struct {
 	TrustProxyHeaders    *bool
 	HideClient           *bool
 	Debug                *bool
+	LogLevel             *string
+	LogFormat            *string
+	LogTime              *bool
 }
 
 func defaultConfigValues() configValues {
@@ -160,6 +168,9 @@ func defaultConfigValues() configValues {
 		TLSAddr:              defaultTLSAddr,
 		ACMECacheDir:         defaultACMECacheDir,
 		PlaybackInfoMaxBytes: defaultPlaybackInfoMaxBytes,
+		LogLevel:             defaultLogLevel,
+		LogFormat:            defaultLogFormat,
+		LogTime:              true,
 	}
 }
 
@@ -198,7 +209,20 @@ func (values *configValues) applyRaw(raw rawConfig) {
 		values.HideClient = *raw.HideClient
 	}
 	if raw.Debug != nil {
-		values.Debug = *raw.Debug
+		if *raw.Debug {
+			values.LogLevel = "debug"
+		} else {
+			values.LogLevel = defaultLogLevel
+		}
+	}
+	if raw.LogLevel != nil {
+		values.LogLevel = strings.TrimSpace(*raw.LogLevel)
+	}
+	if raw.LogFormat != nil {
+		values.LogFormat = strings.TrimSpace(*raw.LogFormat)
+	}
+	if raw.LogTime != nil {
+		values.LogTime = *raw.LogTime
 	}
 }
 
@@ -252,6 +276,16 @@ func (values *configValues) applyEnv(env map[string]string) error {
 		parsed := parseBool(value)
 		raw.Debug = &parsed
 	}
+	if value, ok := nonEmptyEnv(env, "PROXEMBY_LOG_LEVEL"); ok {
+		raw.LogLevel = &value
+	}
+	if value, ok := nonEmptyEnv(env, "PROXEMBY_LOG_FORMAT"); ok {
+		raw.LogFormat = &value
+	}
+	if value, ok := env["PROXEMBY_LOG_TIME"]; ok {
+		parsed := parseBool(value)
+		raw.LogTime = &parsed
+	}
 	values.applyRaw(raw)
 	return nil
 }
@@ -275,6 +309,11 @@ func (values configValues) config() (Config, error) {
 		return Config{}, errors.New("ACME domains are required when TLS is enabled")
 	}
 
+	logging, err := parseLoggingConfig(values.LogLevel, values.LogFormat, values.LogTime)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		Routes:               routes,
 		HTTPAddr:             values.HTTPAddr,
@@ -288,7 +327,7 @@ func (values configValues) config() (Config, error) {
 		AllowedClients:       allowedClients,
 		TrustProxyHeaders:    values.TrustProxyHeaders,
 		HideClient:           values.HideClient,
-		Debug:                values.Debug,
+		Logging:              logging,
 	}, nil
 }
 
@@ -364,7 +403,10 @@ type tomlConfig struct {
 		TrustProxyHeaders bool     `toml:"trust_proxy_headers"`
 	} `toml:"clients"`
 	Logging struct {
-		Debug bool `toml:"debug"`
+		Debug  bool   `toml:"debug"`
+		Level  string `toml:"level"`
+		Format string `toml:"format"`
+		Time   bool   `toml:"time"`
 	} `toml:"logging"`
 }
 
@@ -422,6 +464,15 @@ func rawConfigFromTOML(cfg tomlConfig, meta toml.MetaData) rawConfig {
 	if meta.IsDefined("logging", "debug") {
 		raw.Debug = &cfg.Logging.Debug
 	}
+	if meta.IsDefined("logging", "level") {
+		raw.LogLevel = &cfg.Logging.Level
+	}
+	if meta.IsDefined("logging", "format") {
+		raw.LogFormat = &cfg.Logging.Format
+	}
+	if meta.IsDefined("logging", "time") {
+		raw.LogTime = &cfg.Logging.Time
+	}
 	return raw
 }
 
@@ -466,6 +517,9 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 		trustProxyHeaders   bool
 		hideClient          bool
 		debug               bool
+		logLevel            string
+		logFormat           string
+		logTime             bool
 		help                bool
 	)
 
@@ -486,6 +540,9 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 	flags.BoolVar(&hideClient, "hide-client", false, "hide client identity headers from upstream")
 	flags.BoolVar(&debug, "d", false, "enable debug logging")
 	flags.BoolVar(&debug, "debug", false, "enable debug logging")
+	flags.StringVar(&logLevel, "log-level", "", "log level")
+	flags.StringVar(&logFormat, "log-format", "", "log format")
+	flags.BoolVar(&logTime, "log-time", true, "include time in log output")
 	flags.BoolVar(&help, "help", false, "show help")
 
 	if err := flags.Parse(args); err != nil {
@@ -528,6 +585,12 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 			cli.HideClient = &hideClient
 		case "d", "debug":
 			cli.Debug = &debug
+		case "log-level":
+			cli.LogLevel = &logLevel
+		case "log-format":
+			cli.LogFormat = &logFormat
+		case "log-time":
+			cli.LogTime = &logTime
 		}
 	})
 	if routeErr != nil {

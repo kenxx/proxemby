@@ -2,7 +2,7 @@ package proxemby
 
 import (
 	"bufio"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,22 +19,23 @@ var sensitiveQueryKeys = map[string]struct{}{
 	"password":     {},
 }
 
-type debugLogger struct {
-	upstreamTarget string
-	next           http.Handler
+type requestLogger struct {
+	logger            *slog.Logger
+	upstreamTarget    string
+	trustProxyHeaders bool
+	next              http.Handler
 }
 
-func newDebugLogger(enabled bool, upstreamTarget *url.URL, next http.Handler) http.Handler {
-	if !enabled {
-		return next
-	}
-	return &debugLogger{
-		upstreamTarget: upstreamTarget.String(),
-		next:           next,
+func newRequestLogger(logger *slog.Logger, upstreamTarget *url.URL, trustProxyHeaders bool, next http.Handler) http.Handler {
+	return &requestLogger{
+		logger:            logger,
+		upstreamTarget:    upstreamTarget.String(),
+		trustProxyHeaders: trustProxyHeaders,
+		next:              next,
 	}
 }
 
-func (l *debugLogger) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (l *requestLogger) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
 	rec := &statusRecorder{
 		ResponseWriter: w,
@@ -43,16 +44,16 @@ func (l *debugLogger) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	l.next.ServeHTTP(rec, req)
 
-	log.Printf(
-		"debug request method=%s path=%s status=%d bytes=%d duration=%s client=%s target=%s ua=%q",
-		req.Method,
-		sanitizeRequestURI(req.URL),
-		rec.status,
-		rec.bytes,
-		time.Since(start).Round(time.Millisecond),
-		clientAddrForLog(req),
-		l.targetForLog(req),
-		req.UserAgent(),
+	l.logger.Debug(
+		"request completed",
+		"method", req.Method,
+		"path", sanitizeRequestURI(req.URL),
+		"status", rec.status,
+		"bytes", rec.bytes,
+		"duration", time.Since(start).Round(time.Millisecond).String(),
+		"client", clientAddrForLog(req, l.trustProxyHeaders),
+		"target", l.targetForLog(req),
+		"user_agent", req.UserAgent(),
 	)
 }
 
@@ -115,14 +116,22 @@ func sanitizeRawQuery(raw string) string {
 	return query.Encode()
 }
 
-func clientAddrForLog(req *http.Request) string {
+func clientAddrForLog(req *http.Request, trustProxyHeaders bool) string {
+	if trustProxyHeaders {
+		if addr, ok := parseClientAddr(firstForwardedFor(req.Header.Get("X-Forwarded-For"))); ok {
+			return addr.String()
+		}
+		if addr, ok := parseClientAddr(req.Header.Get("X-Real-IP")); ok {
+			return addr.String()
+		}
+	}
 	if addr, ok := parseRemoteAddr(req.RemoteAddr); ok {
 		return addr.String()
 	}
 	return req.RemoteAddr
 }
 
-func (l *debugLogger) targetForLog(req *http.Request) string {
+func (l *requestLogger) targetForLog(req *http.Request) string {
 	if strings.HasPrefix(req.URL.Path, resourcePrefix) {
 		scheme, remainder, ok := strings.Cut(strings.TrimPrefix(req.URL.Path, resourcePrefix), "/")
 		if !ok {

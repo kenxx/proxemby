@@ -56,5 +56,15 @@ allowed = []
 trust_proxy_headers = false
 
 [logging]
-# Enables request and rewrite debug logging with token query values sanitized.
-debug = false
+# Log level. Values: "debug", "info", "warn", "error".
+level = "info"
+
+# Log format. Values: "text", "json".
+format = "text"
+
+# Set false to remove the time field from log lines.
+time = true
+
+# Legacy alias. If true, this is the same as level = "debug".
+# If both debug and level are set, level wins.
+# debug = false

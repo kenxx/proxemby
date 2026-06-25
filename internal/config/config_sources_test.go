@@ -1,187 +1,13 @@
-package proxemby
+package config
 
 import (
 	"errors"
 	"flag"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 )
-
-func TestConfigFromMapRequiresRoute(t *testing.T) {
-	_, err := ConfigFromMap(map[string]string{})
-	if err == nil {
-		t.Fatal("expected missing route error")
-	}
-}
-
-func TestConfigFromMapDefaultsAndAllowedHosts(t *testing.T) {
-	cfg, err := ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE":         "https://us.emby.com,http://proxemby",
-		"PROXEMBY_ALLOWED_HOSTS": "vod.us.emby.com, cdn.example.com ",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(cfg.Routes) != 1 {
-		t.Fatalf("Routes length = %d, want 1", len(cfg.Routes))
-	}
-	if cfg.Routes[0].UpstreamURL.String() != "https://us.emby.com" {
-		t.Fatalf("UpstreamURL = %q, want https://us.emby.com", cfg.Routes[0].UpstreamURL.String())
-	}
-	if cfg.Routes[0].PublicURL.String() != "http://proxemby" {
-		t.Fatalf("PublicURL = %q, want http://proxemby", cfg.Routes[0].PublicURL.String())
-	}
-	if cfg.Routes[0].ACMEDomain != "proxemby" {
-		t.Fatalf("ACMEDomain = %q, want proxemby", cfg.Routes[0].ACMEDomain)
-	}
-	if cfg.HTTPAddr != ":8080" {
-		t.Fatalf("HTTPAddr = %q, want :8080", cfg.HTTPAddr)
-	}
-	if cfg.TLSAddr != ":443" {
-		t.Fatalf("TLSAddr = %q, want :443", cfg.TLSAddr)
-	}
-	if cfg.ACMECacheDir != ".acme-cache" {
-		t.Fatalf("ACMECacheDir = %q, want .acme-cache", cfg.ACMECacheDir)
-	}
-	if cfg.PlaybackInfoMaxBytes != defaultPlaybackInfoMaxBytes {
-		t.Fatalf("PlaybackInfoMaxBytes = %d, want %d", cfg.PlaybackInfoMaxBytes, defaultPlaybackInfoMaxBytes)
-	}
-	if len(cfg.AllowedClients) != 0 {
-		t.Fatalf("AllowedClients length = %d, want 0", len(cfg.AllowedClients))
-	}
-	if cfg.HideClient {
-		t.Fatal("HideClient = true, want false")
-	}
-	if cfg.Debug {
-		t.Fatal("Debug = true, want false")
-	}
-	if len(cfg.AllowedHosts) != 2 {
-		t.Fatalf("AllowedHosts length = %d, want 2", len(cfg.AllowedHosts))
-	}
-}
-
-func TestConfigFromMapParsesMultipleRoutes(t *testing.T) {
-	cfg, err := ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE": "https://us.emby.com,https://proxemby.jp,cdn.proxemby.jp;https://us2.emby.com,https://proxemby2.jp",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Routes) != 2 {
-		t.Fatalf("Routes length = %d, want 2", len(cfg.Routes))
-	}
-	if cfg.Routes[0].ACMEDomain != "cdn.proxemby.jp" {
-		t.Fatalf("first ACMEDomain = %q, want cdn.proxemby.jp", cfg.Routes[0].ACMEDomain)
-	}
-	if cfg.Routes[1].ACMEDomain != "proxemby2.jp" {
-		t.Fatalf("second ACMEDomain = %q, want proxemby2.jp", cfg.Routes[1].ACMEDomain)
-	}
-	if len(cfg.ACMEDomains) != 2 || cfg.ACMEDomains[0] != "cdn.proxemby.jp" || cfg.ACMEDomains[1] != "proxemby2.jp" {
-		t.Fatalf("ACMEDomains = %v, want [cdn.proxemby.jp proxemby2.jp]", cfg.ACMEDomains)
-	}
-}
-
-func TestConfigFromMapDebug(t *testing.T) {
-	cfg, err := ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE": "https://us.emby.com,http://proxemby",
-		"PROXEMBY_DEBUG": "true",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.Debug {
-		t.Fatal("Debug = false, want true")
-	}
-}
-
-func TestConfigFromMapHideClient(t *testing.T) {
-	cfg, err := ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE":       "https://us.emby.com,http://proxemby",
-		"PROXEMBY_HIDE_CLIENT": "true",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.HideClient {
-		t.Fatal("HideClient = false, want true")
-	}
-}
-
-func TestConfigFromMapAllowedClients(t *testing.T) {
-	cfg, err := ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE":               "https://us.emby.com,http://proxemby",
-		"PROXEMBY_ALLOWED_CLIENTS":     "1.2.3.4, 192.168.0.0/24",
-		"PROXEMBY_TRUST_PROXY_HEADERS": "true",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.AllowedClients) != 2 {
-		t.Fatalf("AllowedClients length = %d, want 2", len(cfg.AllowedClients))
-	}
-	if !cfg.TrustProxyHeaders {
-		t.Fatal("TrustProxyHeaders = false, want true")
-	}
-
-	_, err = ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE":           "https://us.emby.com,http://proxemby",
-		"PROXEMBY_ALLOWED_CLIENTS": "not-an-ip",
-	})
-	if err == nil {
-		t.Fatal("expected allowed clients validation error")
-	}
-}
-
-func TestConfigFromMapPlaybackInfoMaxBytes(t *testing.T) {
-	cfg, err := ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE":                  "https://us.emby.com,http://proxemby",
-		"PROXEMBY_PLAYBACKINFO_MAX_BYTES": "1024",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.PlaybackInfoMaxBytes != 1024 {
-		t.Fatalf("PlaybackInfoMaxBytes = %d, want 1024", cfg.PlaybackInfoMaxBytes)
-	}
-
-	_, err = ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE":                  "https://us.emby.com,http://proxemby",
-		"PROXEMBY_PLAYBACKINFO_MAX_BYTES": "0",
-	})
-	if err == nil {
-		t.Fatal("expected max bytes validation error")
-	}
-}
-
-func TestConfigFromMapTLSUsesRouteACMEDomains(t *testing.T) {
-	cfg, err := ConfigFromMap(map[string]string{
-		"PROXEMBY_ROUTE":      "https://us.emby.com,https://proxemby.example.com;https://us2.emby.com,https://proxemby2.example.com,cert.example.com",
-		"PROXEMBY_TLS_ENABLE": "true",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.TLSEnable {
-		t.Fatal("TLSEnable = false, want true")
-	}
-	if len(cfg.ACMEDomains) != 2 || cfg.ACMEDomains[0] != "proxemby.example.com" || cfg.ACMEDomains[1] != "cert.example.com" {
-		t.Fatalf("ACMEDomains = %v, want [proxemby.example.com cert.example.com]", cfg.ACMEDomains)
-	}
-}
-
-func TestConfigFromSourcesIgnoresMissingDefaultConfig(t *testing.T) {
-	cfg, err := configFromSources([]string{
-		"--route", "https://cli.emby.com,http://proxemby",
-	}, nil, filepath.Join(t.TempDir(), "missing-default.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Routes[0].UpstreamURL.String() != "https://cli.emby.com" {
-		t.Fatalf("UpstreamURL = %q, want https://cli.emby.com", cfg.Routes[0].UpstreamURL.String())
-	}
-}
 
 func TestConfigFromSourcesExplicitMissingConfigErrors(t *testing.T) {
 	_, err := ConfigFromSources([]string{
@@ -224,6 +50,9 @@ trust_proxy_headers = true
 
 [logging]
 debug = true
+level = "error"
+format = "json"
+time = false
 `)
 
 	cfg, err := ConfigFromSources([]string{"--config", path}, nil)
@@ -257,8 +86,8 @@ debug = true
 	if len(cfg.AllowedClients) != 2 || !cfg.TrustProxyHeaders {
 		t.Fatalf("client config = allowed:%v trust:%v", cfg.AllowedClients, cfg.TrustProxyHeaders)
 	}
-	if !cfg.HideClient || !cfg.Debug {
-		t.Fatalf("HideClient/Debug = %v/%v, want true/true", cfg.HideClient, cfg.Debug)
+	if !cfg.HideClient || cfg.Logging.Level != slog.LevelError || cfg.Logging.Format != "json" || cfg.Logging.Time {
+		t.Fatalf("HideClient/logging = %v/%v/%q/%v, want true/error/json/false", cfg.HideClient, cfg.Logging.Level, cfg.Logging.Format, cfg.Logging.Time)
 	}
 }
 
@@ -272,7 +101,7 @@ public_url = "http://toml-public"
 http_addr = ":8081"
 
 [logging]
-debug = false
+level = "warn"
 `)
 
 	cfg, err := ConfigFromSources([]string{
@@ -280,6 +109,9 @@ debug = false
 		"--route", "https://cli.emby.com,http://cli-public",
 		"--http-addr", ":9090",
 		"--debug",
+		"--log-level", "error",
+		"--log-format", "json",
+		"--log-time=false",
 	}, []string{
 		"PROXEMBY_ROUTE=https://env.emby.com,http://env-public",
 		"PROXEMBY_HTTP_ADDR=:8082",
@@ -297,8 +129,14 @@ debug = false
 	if cfg.HTTPAddr != ":9090" {
 		t.Fatalf("HTTPAddr = %q, want CLI value", cfg.HTTPAddr)
 	}
-	if !cfg.Debug {
-		t.Fatal("Debug = false, want CLI true")
+	if cfg.Logging.Level != slog.LevelError {
+		t.Fatalf("Log level = %v, want CLI error", cfg.Logging.Level)
+	}
+	if cfg.Logging.Format != "json" {
+		t.Fatalf("Log format = %q, want CLI json", cfg.Logging.Format)
+	}
+	if cfg.Logging.Time {
+		t.Fatal("Log time = true, want CLI false")
 	}
 }
 
@@ -331,8 +169,8 @@ public_url = "http://toml-public"
 	if len(cfg.AllowedHosts) != 2 {
 		t.Fatalf("AllowedHosts length = %d, want 2", len(cfg.AllowedHosts))
 	}
-	if !cfg.Debug {
-		t.Fatal("Debug = false, want true")
+	if cfg.Logging.Level != slog.LevelDebug {
+		t.Fatalf("Log level = %v, want debug", cfg.Logging.Level)
 	}
 }
 
@@ -367,6 +205,8 @@ func TestConfigFromSourcesValidationErrors(t *testing.T) {
 		{"--route", "https://us.emby.com,http://same.example.com;https://us2.emby.com,http://same.example.com"},
 		{"--route", "https://us.emby.com,http://proxemby", "--allowed-clients", "not-an-ip"},
 		{"--route", "https://us.emby.com,http://proxemby", "--playbackinfo-max-bytes", "0"},
+		{"--route", "https://us.emby.com,http://proxemby", "--log-level", "verbose"},
+		{"--route", "https://us.emby.com,http://proxemby", "--log-format", "plain"},
 		{"-u", "https://us.emby.com", "-p", "http://proxemby"},
 	} {
 		_, err = ConfigFromSources(args, nil)

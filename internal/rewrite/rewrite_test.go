@@ -1,14 +1,16 @@
-package proxemby
+package rewrite
 
 import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"proxemby/internal/hosts"
 )
 
 func TestRewritePlaybackInfoRewritesNestedURLStrings(t *testing.T) {
 	publicURL, _ := url.Parse("http://proxemby")
-	registry := NewHostRegistry(nil)
+	registry := hosts.NewRegistry(nil)
 	rewriter := NewRewriter(publicURL, registry)
 
 	body := []byte(`{
@@ -46,7 +48,7 @@ func TestRewritePlaybackInfoRewritesNestedURLStrings(t *testing.T) {
 
 func TestRewritePlaybackInfoIgnoresInvalidJSONAndNonURLs(t *testing.T) {
 	publicURL, _ := url.Parse("http://proxemby")
-	rewriter := NewRewriter(publicURL, NewHostRegistry(nil))
+	rewriter := NewRewriter(publicURL, hosts.NewRegistry(nil))
 
 	out, events, err := rewriter.RewritePlaybackInfo([]byte(`not-json`))
 	if err != nil {

@@ -1,4 +1,4 @@
-package proxemby
+package server
 
 import (
 	"context"

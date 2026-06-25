@@ -11,20 +11,22 @@ import (
 
 	"golang.org/x/crypto/acme/autocert"
 
-	"proxemby/internal/proxemby"
+	"proxemby/internal/config"
+	"proxemby/internal/logging"
+	"proxemby/internal/server"
 )
 
 func main() {
-	cfg, err := proxemby.ConfigFromSources(os.Args[1:], os.Environ())
+	cfg, err := config.ConfigFromSources(os.Args[1:], os.Environ())
 	if errors.Is(err, flag.ErrHelp) {
-		proxemby.WriteConfigUsage(os.Stdout)
+		config.WriteConfigUsage(os.Stdout)
 		return
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	logger, err := proxemby.NewLogger(cfg.Logging, os.Stderr)
+	logger, err := logging.NewLogger(cfg.Logging, os.Stderr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -34,8 +36,8 @@ func main() {
 		logger.Info("proxemby route configured", "public_url", route.PublicURL.String(), "upstream_url", route.UpstreamURL.String(), "acme_domain", route.ACMEDomain)
 	}
 
-	server := proxemby.NewServerWithLogger(cfg, logger)
-	handler := server.Handler()
+	proxyServer := server.NewServerWithLogger(cfg, logger)
+	handler := proxyServer.Handler()
 	httpHandler := handler
 
 	var tlsConfig *tls.Config

@@ -1,4 +1,4 @@
-package proxemby
+package rewrite
 
 import (
 	"net/url"
@@ -11,7 +11,7 @@ import (
 
 type Rewriter struct {
 	publicURL *url.URL
-	registry  *HostRegistry
+	registry  HostRegistry
 }
 
 type RewriteEvent struct {
@@ -22,7 +22,11 @@ type RewriteEvent struct {
 	Host      string
 }
 
-func NewRewriter(publicURL *url.URL, registry *HostRegistry) *Rewriter {
+type HostRegistry interface {
+	Allow(host, scheme string)
+}
+
+func NewRewriter(publicURL *url.URL, registry HostRegistry) *Rewriter {
 	return &Rewriter{
 		publicURL: publicURL,
 		registry:  registry,

@@ -1,4 +1,4 @@
-package proxemby
+package logging
 
 import (
 	"context"
@@ -9,17 +9,17 @@ import (
 )
 
 const (
-	defaultLogLevel  = "info"
-	defaultLogFormat = "text"
+	DefaultLevel  = "info"
+	DefaultFormat = "text"
 )
 
-type LoggingConfig struct {
+type Config struct {
 	Level  slog.Level
 	Format string
 	Time   bool
 }
 
-func NewLogger(cfg LoggingConfig, w io.Writer) (*slog.Logger, error) {
+func NewLogger(cfg Config, w io.Writer) (*slog.Logger, error) {
 	opts := &slog.HandlerOptions{
 		Level: cfg.Level,
 	}
@@ -42,18 +42,18 @@ func NewLogger(cfg LoggingConfig, w io.Writer) (*slog.Logger, error) {
 	}
 }
 
-func parseLoggingConfig(levelValue, formatValue string, timeValue bool) (LoggingConfig, error) {
+func ParseConfig(levelValue, formatValue string, timeValue bool) (Config, error) {
 	level, err := parseLogLevel(levelValue)
 	if err != nil {
-		return LoggingConfig{}, err
+		return Config{}, err
 	}
 	formatValue = strings.ToLower(strings.TrimSpace(formatValue))
 	switch formatValue {
 	case "text", "json":
 	default:
-		return LoggingConfig{}, fmt.Errorf("log format must be text or json")
+		return Config{}, fmt.Errorf("log format must be text or json")
 	}
-	return LoggingConfig{
+	return Config{
 		Level:  level,
 		Format: formatValue,
 		Time:   timeValue,
@@ -75,12 +75,16 @@ func parseLogLevel(raw string) (slog.Level, error) {
 	}
 }
 
-type slogWriter struct {
+type SlogWriter struct {
 	logger *slog.Logger
 	level  slog.Level
 }
 
-func (w slogWriter) Write(p []byte) (int, error) {
+func NewSlogWriter(logger *slog.Logger, level slog.Level) io.Writer {
+	return SlogWriter{logger: logger, level: level}
+}
+
+func (w SlogWriter) Write(p []byte) (int, error) {
 	text := strings.TrimSpace(string(p))
 	if text != "" {
 		w.logger.Log(context.Background(), w.level, text)

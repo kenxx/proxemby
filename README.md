@@ -21,6 +21,39 @@ go run ./cmd/proxemby --route https://us.emby.com,https://proxemby.example.com
 
 Then point the Emby client at the route's `public_url`.
 
+## Docker
+
+Release images are published to GitHub Container Registry:
+
+```sh
+docker run --rm \
+  -p 8080:8080 \
+  -e PROXEMBY_ROUTE=https://us.emby.com,https://proxemby.example.com \
+  ghcr.io/kenxx/proxemby:latest
+```
+
+Or mount a config file:
+
+```sh
+docker run --rm \
+  -p 8080:8080 \
+  -v "$PWD/proxemby.toml:/etc/proxemby/proxemby.toml:ro" \
+  ghcr.io/kenxx/proxemby:latest
+```
+
+Example Compose service:
+
+```yaml
+services:
+  proxemby:
+    image: ghcr.io/kenxx/proxemby:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PROXEMBY_ROUTE: "https://us.emby.com,https://proxemby.example.com"
+```
+
 ## Configuration
 
 Configuration is loaded in this order, with later sources overriding earlier ones:

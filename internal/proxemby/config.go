@@ -23,8 +23,7 @@ const (
 )
 
 type Config struct {
-	UpstreamURL          *url.URL
-	PublicURL            *url.URL
+	Routes               []Route
 	HTTPAddr             string
 	TLSEnable            bool
 	TLSAddr              string
@@ -37,6 +36,12 @@ type Config struct {
 	TrustProxyHeaders    bool
 	HideClient           bool
 	Debug                bool
+}
+
+type Route struct {
+	UpstreamURL *url.URL
+	PublicURL   *url.URL
+	ACMEDomain  string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -97,14 +102,12 @@ func WriteConfigUsage(w io.Writer) {
 
 Options:
   -c, --config PATH                  Config file path (default /etc/proxemby/proxemby.toml)
-  -u, --upstream-url URL             Upstream Emby server URL
-  -p, --public-url URL               Public proxemby URL
+      --route ROUTE                  Route as upstream_url,public_url[,acme_domain]; may be repeated
   -h, --http-addr ADDR               HTTP listen address
   -a, --allowed-hosts HOSTS          Comma-separated resource proxy host allowlist
   -d, --debug                        Enable debug logging
       --tls-enable                   Enable built-in HTTPS with ACME
       --tls-addr ADDR                HTTPS listen address
-      --acme-domains DOMAINS         Comma-separated ACME certificate domains
       --acme-email EMAIL             ACME account email
       --acme-cache-dir DIR           ACME certificate cache directory
       --playbackinfo-max-bytes N     Maximum PlaybackInfo JSON body size
@@ -116,12 +119,10 @@ Options:
 }
 
 type configValues struct {
-	UpstreamURL          string
-	PublicURL            string
+	Routes               []routeValues
 	HTTPAddr             string
 	TLSEnable            bool
 	TLSAddr              string
-	ACMEDomains          []string
 	ACMEEmail            string
 	ACMECacheDir         string
 	AllowedHosts         []string
@@ -132,13 +133,17 @@ type configValues struct {
 	Debug                bool
 }
 
+type routeValues struct {
+	UpstreamURL string
+	PublicURL   string
+	ACMEDomain  string
+}
+
 type rawConfig struct {
-	UpstreamURL          *string
-	PublicURL            *string
+	Routes               []routeValues
 	HTTPAddr             *string
 	TLSEnable            *bool
 	TLSAddr              *string
-	ACMEDomains          []string
 	ACMEEmail            *string
 	ACMECacheDir         *string
 	AllowedHosts         []string
@@ -159,11 +164,8 @@ func defaultConfigValues() configValues {
 }
 
 func (values *configValues) applyRaw(raw rawConfig) {
-	if raw.UpstreamURL != nil {
-		values.UpstreamURL = strings.TrimSpace(*raw.UpstreamURL)
-	}
-	if raw.PublicURL != nil {
-		values.PublicURL = strings.TrimSpace(*raw.PublicURL)
+	if raw.Routes != nil {
+		values.Routes = raw.Routes
 	}
 	if raw.HTTPAddr != nil {
 		values.HTTPAddr = valueOrDefault(*raw.HTTPAddr, defaultHTTPAddr)
@@ -173,9 +175,6 @@ func (values *configValues) applyRaw(raw rawConfig) {
 	}
 	if raw.TLSAddr != nil {
 		values.TLSAddr = valueOrDefault(*raw.TLSAddr, defaultTLSAddr)
-	}
-	if raw.ACMEDomains != nil {
-		values.ACMEDomains = cleanStrings(raw.ACMEDomains)
 	}
 	if raw.ACMEEmail != nil {
 		values.ACMEEmail = strings.TrimSpace(*raw.ACMEEmail)
@@ -205,11 +204,12 @@ func (values *configValues) applyRaw(raw rawConfig) {
 
 func (values *configValues) applyEnv(env map[string]string) error {
 	raw := rawConfig{}
-	if value, ok := nonEmptyEnv(env, "PROXEMBY_UPSTREAM_URL"); ok {
-		raw.UpstreamURL = &value
-	}
-	if value, ok := nonEmptyEnv(env, "PROXEMBY_PUBLIC_URL"); ok {
-		raw.PublicURL = &value
+	if value, ok := nonEmptyEnv(env, "PROXEMBY_ROUTE"); ok {
+		routes, err := parseRouteValues(value)
+		if err != nil {
+			return err
+		}
+		raw.Routes = routes
 	}
 	if value, ok := nonEmptyEnv(env, "PROXEMBY_HTTP_ADDR"); ok {
 		raw.HTTPAddr = &value
@@ -220,9 +220,6 @@ func (values *configValues) applyEnv(env map[string]string) error {
 	}
 	if value, ok := nonEmptyEnv(env, "PROXEMBY_TLS_ADDR"); ok {
 		raw.TLSAddr = &value
-	}
-	if value, ok := nonEmptyEnv(env, "PROXEMBY_ACME_DOMAINS"); ok {
-		raw.ACMEDomains = splitCSV(value)
 	}
 	if value, ok := nonEmptyEnv(env, "PROXEMBY_ACME_EMAIL"); ok {
 		raw.ACMEEmail = &value
@@ -269,27 +266,21 @@ func (values configValues) config() (Config, error) {
 		return Config{}, err
 	}
 
-	upstream, err := parseRequiredURL(values.UpstreamURL, "upstream URL")
+	routes, acmeDomains, err := parseRoutes(values.Routes)
 	if err != nil {
 		return Config{}, err
 	}
 
-	public, err := parseRequiredURL(values.PublicURL, "public URL")
-	if err != nil {
-		return Config{}, err
-	}
-
-	if values.TLSEnable && len(values.ACMEDomains) == 0 {
+	if values.TLSEnable && len(acmeDomains) == 0 {
 		return Config{}, errors.New("ACME domains are required when TLS is enabled")
 	}
 
 	return Config{
-		UpstreamURL:          upstream,
-		PublicURL:            public,
+		Routes:               routes,
 		HTTPAddr:             values.HTTPAddr,
 		TLSEnable:            values.TLSEnable,
 		TLSAddr:              values.TLSAddr,
-		ACMEDomains:          cleanStrings(values.ACMEDomains),
+		ACMEDomains:          acmeDomains,
 		ACMEEmail:            strings.TrimSpace(values.ACMEEmail),
 		ACMECacheDir:         values.ACMECacheDir,
 		AllowedHosts:         cleanStrings(values.AllowedHosts),
@@ -301,22 +292,67 @@ func (values configValues) config() (Config, error) {
 	}, nil
 }
 
+func parseRoutes(values []routeValues) ([]Route, []string, error) {
+	if len(values) == 0 {
+		return nil, nil, errors.New("at least one route is required")
+	}
+
+	routes := make([]Route, 0, len(values))
+	acmeDomains := make([]string, 0, len(values))
+	seenPublicHosts := map[string]struct{}{}
+	seenACMEDomains := map[string]struct{}{}
+
+	for i, value := range values {
+		routeName := fmt.Sprintf("route %d", i+1)
+		upstream, err := parseRequiredURL(value.UpstreamURL, routeName+" upstream URL")
+		if err != nil {
+			return nil, nil, err
+		}
+		public, err := parseRequiredURL(value.PublicURL, routeName+" public URL")
+		if err != nil {
+			return nil, nil, err
+		}
+
+		publicHost := strings.ToLower(public.Hostname())
+		if _, ok := seenPublicHosts[publicHost]; ok {
+			return nil, nil, fmt.Errorf("duplicate route public host %q", publicHost)
+		}
+		seenPublicHosts[publicHost] = struct{}{}
+
+		acmeDomain := strings.TrimSpace(value.ACMEDomain)
+		if acmeDomain == "" {
+			acmeDomain = publicHost
+		}
+		acmeDomain = strings.ToLower(acmeDomain)
+		if _, ok := seenACMEDomains[acmeDomain]; !ok {
+			acmeDomains = append(acmeDomains, acmeDomain)
+			seenACMEDomains[acmeDomain] = struct{}{}
+		}
+
+		routes = append(routes, Route{
+			UpstreamURL: upstream,
+			PublicURL:   public,
+			ACMEDomain:  acmeDomain,
+		})
+	}
+
+	return routes, acmeDomains, nil
+}
+
 type tomlConfig struct {
-	Upstream struct {
-		URL string `toml:"url"`
-	} `toml:"upstream"`
-	Public struct {
-		URL string `toml:"url"`
-	} `toml:"public"`
+	Routes []struct {
+		UpstreamURL string `toml:"upstream_url"`
+		PublicURL   string `toml:"public_url"`
+		ACMEDomain  string `toml:"acme_domain"`
+	} `toml:"routes"`
 	Server struct {
 		HTTPAddr string `toml:"http_addr"`
 	} `toml:"server"`
 	TLS struct {
-		Enable       bool     `toml:"enable"`
-		Addr         string   `toml:"addr"`
-		ACMEDomains  []string `toml:"acme_domains"`
-		ACMEEmail    string   `toml:"acme_email"`
-		ACMECacheDir string   `toml:"acme_cache_dir"`
+		Enable       bool   `toml:"enable"`
+		Addr         string `toml:"addr"`
+		ACMEEmail    string `toml:"acme_email"`
+		ACMECacheDir string `toml:"acme_cache_dir"`
 	} `toml:"tls"`
 	Proxy struct {
 		AllowedHosts         []string `toml:"allowed_hosts"`
@@ -343,11 +379,15 @@ func configValuesFromTOMLFile(path string) (rawConfig, error) {
 
 func rawConfigFromTOML(cfg tomlConfig, meta toml.MetaData) rawConfig {
 	raw := rawConfig{}
-	if meta.IsDefined("upstream", "url") {
-		raw.UpstreamURL = &cfg.Upstream.URL
-	}
-	if meta.IsDefined("public", "url") {
-		raw.PublicURL = &cfg.Public.URL
+	if meta.IsDefined("routes") {
+		raw.Routes = make([]routeValues, 0, len(cfg.Routes))
+		for _, route := range cfg.Routes {
+			raw.Routes = append(raw.Routes, routeValues{
+				UpstreamURL: route.UpstreamURL,
+				PublicURL:   route.PublicURL,
+				ACMEDomain:  route.ACMEDomain,
+			})
+		}
 	}
 	if meta.IsDefined("server", "http_addr") {
 		raw.HTTPAddr = &cfg.Server.HTTPAddr
@@ -357,9 +397,6 @@ func rawConfigFromTOML(cfg tomlConfig, meta toml.MetaData) rawConfig {
 	}
 	if meta.IsDefined("tls", "addr") {
 		raw.TLSAddr = &cfg.TLS.Addr
-	}
-	if meta.IsDefined("tls", "acme_domains") {
-		raw.ACMEDomains = cfg.TLS.ACMEDomains
 	}
 	if meta.IsDefined("tls", "acme_email") {
 		raw.ACMEEmail = &cfg.TLS.ACMEEmail
@@ -394,6 +431,17 @@ type cliConfig struct {
 	help       bool
 }
 
+type routeFlags []string
+
+func (flags *routeFlags) String() string {
+	return strings.Join(*flags, ";")
+}
+
+func (flags *routeFlags) Set(value string) error {
+	*flags = append(*flags, value)
+	return nil
+}
+
 func parseConfigFlags(args []string) (cliConfig, error) {
 	for _, arg := range args {
 		if arg == "-help" || strings.HasPrefix(arg, "-help=") {
@@ -406,12 +454,10 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 
 	var (
 		configPath          string
-		upstreamURL         string
-		publicURL           string
+		routes              routeFlags
 		httpAddr            string
 		tlsEnable           bool
 		tlsAddr             string
-		acmeDomains         string
 		acmeEmail           string
 		acmeCacheDir        string
 		allowedHosts        string
@@ -425,15 +471,11 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 
 	flags.StringVar(&configPath, "c", "", "config file path")
 	flags.StringVar(&configPath, "config", "", "config file path")
-	flags.StringVar(&upstreamURL, "u", "", "upstream Emby server URL")
-	flags.StringVar(&upstreamURL, "upstream-url", "", "upstream Emby server URL")
-	flags.StringVar(&publicURL, "p", "", "public proxemby URL")
-	flags.StringVar(&publicURL, "public-url", "", "public proxemby URL")
+	flags.Var(&routes, "route", "route as upstream_url,public_url[,acme_domain]")
 	flags.StringVar(&httpAddr, "h", "", "HTTP listen address")
 	flags.StringVar(&httpAddr, "http-addr", "", "HTTP listen address")
 	flags.BoolVar(&tlsEnable, "tls-enable", false, "enable built-in HTTPS with ACME")
 	flags.StringVar(&tlsAddr, "tls-addr", "", "HTTPS listen address")
-	flags.StringVar(&acmeDomains, "acme-domains", "", "comma-separated ACME certificate domains")
 	flags.StringVar(&acmeEmail, "acme-email", "", "ACME account email")
 	flags.StringVar(&acmeCacheDir, "acme-cache-dir", "", "ACME certificate cache directory")
 	flags.StringVar(&allowedHosts, "a", "", "comma-separated resource proxy host allowlist")
@@ -454,22 +496,22 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 	}
 
 	cli := cliConfig{help: help}
+	var routeErr error
 	flags.Visit(func(f *flag.Flag) {
+		if routeErr != nil {
+			return
+		}
 		switch f.Name {
 		case "c", "config":
 			cli.configPath = &configPath
-		case "u", "upstream-url":
-			cli.UpstreamURL = &upstreamURL
-		case "p", "public-url":
-			cli.PublicURL = &publicURL
+		case "route":
+			cli.Routes, routeErr = parseRouteValues(strings.Join(routes, ";"))
 		case "h", "http-addr":
 			cli.HTTPAddr = &httpAddr
 		case "tls-enable":
 			cli.TLSEnable = &tlsEnable
 		case "tls-addr":
 			cli.TLSAddr = &tlsAddr
-		case "acme-domains":
-			cli.ACMEDomains = splitCSV(acmeDomains)
 		case "acme-email":
 			cli.ACMEEmail = &acmeEmail
 		case "acme-cache-dir":
@@ -488,7 +530,46 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 			cli.Debug = &debug
 		}
 	})
+	if routeErr != nil {
+		return cliConfig{}, routeErr
+	}
 	return cli, nil
+}
+
+func parseRouteValues(raw string) ([]routeValues, error) {
+	entries := strings.Split(raw, ";")
+	routes := make([]routeValues, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.Split(entry, ",")
+		if len(parts) != 2 && len(parts) != 3 {
+			return nil, fmt.Errorf("route %q must have upstream_url,public_url[,acme_domain]", entry)
+		}
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		if parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("route %q must include upstream_url and public_url", entry)
+		}
+		route := routeValues{
+			UpstreamURL: parts[0],
+			PublicURL:   parts[1],
+		}
+		if len(parts) == 3 {
+			if parts[2] == "" {
+				return nil, fmt.Errorf("route %q has empty acme_domain", entry)
+			}
+			route.ACMEDomain = parts[2]
+		}
+		routes = append(routes, route)
+	}
+	if len(routes) == 0 {
+		return nil, errors.New("at least one route is required")
+	}
+	return routes, nil
 }
 
 func envMap(entries []string) map[string]string {

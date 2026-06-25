@@ -2,14 +2,21 @@
 # By default proxemby looks for /etc/proxemby/proxemby.toml.
 # Environment variables and command-line flags override values in this file.
 
-[upstream]
+[[routes]]
 # The real Emby server proxemby forwards client traffic to.
-url = "https://us.emby.com"
+upstream_url = "https://us.emby.com"
 
-[public]
-# The URL Emby clients use to reach proxemby.
-# Rewritten media/resource URLs are generated from this base URL.
-url = "http://proxemby"
+# The URL Emby clients use to reach proxemby. Incoming requests are routed by
+# this host, and rewritten media/resource URLs are generated from this base URL.
+public_url = "https://proxemby.example.com"
+
+# Optional certificate domain for this route. If empty, public_url's hostname is
+# used for ACME when TLS is enabled.
+acme_domain = "proxemby.example.com"
+
+[[routes]]
+upstream_url = "https://us2.emby.com"
+public_url = "https://proxemby2.example.com"
 
 [server]
 # HTTP listen address. Use ":8080" to listen on all interfaces.
@@ -21,9 +28,6 @@ enable = false
 
 # HTTPS listen address used when TLS is enabled.
 addr = ":443"
-
-# Certificate domains. Required when enable = true.
-acme_domains = ["proxemby.example.com"]
 
 # Optional ACME account email.
 acme_email = ""

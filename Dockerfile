@@ -1,17 +1,23 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26 AS build
+FROM rust:1-alpine AS build
+
+RUN apk add --no-cache build-base
 
 WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
+COPY Cargo.toml Cargo.lock ./
+COPY .cargo .cargo
+# Build dependencies first so they are cached separately from the source.
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
+    && cargo build --release --locked \
+    && rm -rf src
 
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/proxemby ./cmd/proxemby
+COPY src src
+RUN touch src/main.rs src/lib.rs && cargo build --release --locked
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
-COPY --from=build /out/proxemby /usr/bin/proxemby
+COPY --from=build /src/target/release/proxemby /usr/bin/proxemby
 COPY examples/proxemby.toml /etc/proxemby/proxemby.toml
 
 EXPOSE 8080

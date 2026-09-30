@@ -2,18 +2,18 @@
 
 ## Project Overview
 
-`proxemby` is a Go project. Requirements are still being gathered, so keep the initial structure small and avoid speculative abstractions.
+`proxemby` is a Rust project (tokio + hyper). Performance and memory use are core goals: avoid extra copies, allocations and buffering on the proxy path. Requirements are still being gathered, so keep the initial structure small and avoid speculative abstractions.
 
 ## Development Guidelines
 
-- Prefer standard Go tooling and idiomatic package structure.
+- Prefer standard Cargo tooling and idiomatic module structure.
 - Keep changes narrowly scoped to the current request.
-- Run `gofmt` on modified Go files before finishing.
-- Use `go test ./...` when tests or Go code are added.
+- Run `cargo fmt` and `cargo clippy --all-targets` before finishing.
+- Use `cargo test` when tests or Rust code are added.
 - Do not add external dependencies unless they are clearly needed.
 
 ## Repository Notes
 
-- Module name: `proxemby`
-- Go version is managed by `go.mod`.
-- This repository currently contains only the project bootstrap files.
+- Crate name: `proxemby` (library in `src/lib.rs`, binary in `src/main.rs`).
+- Integration tests live in `tests/` and run the proxy against local mock upstreams.
+- Release builds target `x86_64-unknown-linux-musl`.

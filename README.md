@@ -1,6 +1,6 @@
 # proxemby
 
-`proxemby` is a small Go edge proxy for Emby servers.
+`proxemby` is a small Rust edge proxy for Emby servers, built on tokio and hyper.
 
 It proxies client traffic to one or more upstream Emby servers and rewrites
 `PlaybackInfo` resource URLs so media files can also flow through proxemby.
@@ -10,13 +10,13 @@ Routes share one listener and are selected by the request `Host`.
 
 ```sh
 PROXEMBY_ROUTE=https://us.emby.com,https://proxemby.example.com \
-go run ./cmd/proxemby
+cargo run --release
 ```
 
 Or pass routes as command-line flags:
 
 ```sh
-go run ./cmd/proxemby --route https://us.emby.com,https://proxemby.example.com
+cargo run --release -- --route https://us.emby.com,https://proxemby.example.com
 ```
 
 Then point the Emby client at the route's `public_url`.
@@ -199,8 +199,10 @@ Environment variables:
 - `PlaybackInfo` JSON responses are scanned for absolute `http` or `https` URL strings.
 - Rewritten resource URLs use the matching route's `public_url` as `public_url/_proxy/{scheme}/{host}/{path}`.
 - `/_proxy/` only allows hosts discovered from that route's rewritten `PlaybackInfo` URLs or explicitly listed in `PROXEMBY_ALLOWED_HOSTS`.
-- Media/resource proxying is streamed by Go's reverse proxy; only PlaybackInfo JSON is buffered, with a size limit.
+- Media/resource proxying is streamed without buffering; only PlaybackInfo (and, with allowed users set, login) JSON is buffered, with a size limit.
 - TLS ACME certificate domains come from each route's `acme_domain`; if omitted, the route's `public_url` hostname is used.
+- Certificates are issued by Let's Encrypt with the TLS-ALPN-01 challenge, so the TLS listener must be reachable on port 443 of each domain.
+- HTTPS serves HTTP/2 and HTTP/1.1. Connections to upstream servers are pooled and negotiate HTTP/2 when the upstream supports it; WebSocket upgrades always use HTTP/1.1.
 - Client IP allowlisting is disabled by default; set `PROXEMBY_ALLOWED_CLIENTS` to enable it.
 - Set `PROXEMBY_ALLOWED_USERS` to keep the proxy to yourself. Only logins made through proxemby by those upstream users are accepted; any other request needs an access token from such a login and gets `401` otherwise. Logins by other users get `401` and their upstream session is logged out. Pre-login endpoints (`/System/Info/Public`, login, `/web/` static files) and `GET` image requests stay public, and `/Users/Public` returns an empty list.
 - With allowed users set, rewritten resource URLs carry a signature as `public_url/_proxy/{signature}/{scheme}/{host}/{path}`, so `/_proxy/` only serves URLs handed out in an authorized `PlaybackInfo` response (or requests with a valid access token). Existing clients need to log in again after enabling it. Set `PROXEMBY_AUTH_STATE_FILE` so logins and signatures survive restarts.
@@ -210,5 +212,14 @@ Environment variables:
 ## Development
 
 ```sh
-go test ./...
+cargo test
 ```
+
+Release binaries are static musl builds:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+musl builds use mimalloc; `.cargo/config.toml` tunes it to commit memory on demand.

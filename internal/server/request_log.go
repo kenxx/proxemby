@@ -134,6 +134,10 @@ func clientAddrForLog(req *http.Request, trustProxyHeaders bool) string {
 func (l *requestLogger) targetForLog(req *http.Request) string {
 	if strings.HasPrefix(req.URL.Path, resourcePrefix) {
 		scheme, remainder, ok := strings.Cut(strings.TrimPrefix(req.URL.Path, resourcePrefix), "/")
+		if ok && !isHTTPProxyScheme(scheme) {
+			// Skip the signature segment of signed resource URLs.
+			scheme, remainder, ok = strings.Cut(remainder, "/")
+		}
 		if !ok {
 			return "resource:invalid"
 		}

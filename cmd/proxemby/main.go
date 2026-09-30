@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/acme/autocert"
 
+	"proxemby/internal/auth"
 	"proxemby/internal/config"
 	"proxemby/internal/logging"
 	"proxemby/internal/server"
@@ -36,7 +37,17 @@ func main() {
 		logger.Info("proxemby route configured", "public_url", route.PublicURL.String(), "upstream_url", route.UpstreamURL.String(), "acme_domain", route.ACMEDomain)
 	}
 
-	proxyServer := server.NewServerWithLogger(cfg, logger)
+	store := auth.NewMemoryStore()
+	if len(cfg.AllowedUsers) > 0 {
+		store, err = auth.OpenStore(cfg.AuthStateFile)
+		if err != nil {
+			logger.Error("proxemby auth state failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("proxemby allowed users configured", "users", cfg.AllowedUsers, "state_file", cfg.AuthStateFile)
+	}
+
+	proxyServer := server.NewServerWithStore(cfg, logger, store)
 	handler := proxyServer.Handler()
 	httpHandler := handler
 

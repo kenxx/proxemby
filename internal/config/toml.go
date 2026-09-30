@@ -30,6 +30,10 @@ type tomlConfig struct {
 		Allowed           []string `toml:"allowed"`
 		TrustProxyHeaders bool     `toml:"trust_proxy_headers"`
 	} `toml:"clients"`
+	Auth struct {
+		AllowedUsers []string `toml:"allowed_users"`
+		StateFile    string   `toml:"state_file"`
+	} `toml:"auth"`
 	Logging struct {
 		Debug  bool   `toml:"debug"`
 		Level  string `toml:"level"`
@@ -88,6 +92,12 @@ func rawConfigFromTOML(cfg tomlConfig, meta toml.MetaData) rawConfig {
 	}
 	if meta.IsDefined("clients", "trust_proxy_headers") {
 		raw.TrustProxyHeaders = &cfg.Clients.TrustProxyHeaders
+	}
+	if meta.IsDefined("auth", "allowed_users") {
+		raw.AllowedUsers = cfg.Auth.AllowedUsers
+	}
+	if meta.IsDefined("auth", "state_file") {
+		raw.AuthStateFile = &cfg.Auth.StateFile
 	}
 	if meta.IsDefined("logging", "debug") {
 		raw.Debug = &cfg.Logging.Debug

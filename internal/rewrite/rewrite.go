@@ -12,6 +12,7 @@ import (
 type Rewriter struct {
 	publicURL *url.URL
 	registry  HostRegistry
+	sign      func(scheme, host string) string
 }
 
 type RewriteEvent struct {
@@ -30,6 +31,16 @@ func NewRewriter(publicURL *url.URL, registry HostRegistry) *Rewriter {
 	return &Rewriter{
 		publicURL: publicURL,
 		registry:  registry,
+	}
+}
+
+// NewSignedRewriter adds a signature path segment in front of the scheme so
+// resource URLs only work when they were issued by proxemby.
+func NewSignedRewriter(publicURL *url.URL, registry HostRegistry, sign func(scheme, host string) string) *Rewriter {
+	return &Rewriter{
+		publicURL: publicURL,
+		registry:  registry,
+		sign:      sign,
 	}
 }
 
@@ -102,8 +113,14 @@ func (r *Rewriter) rewriteURL(raw string) (string, RewriteEvent, bool) {
 
 	r.registry.Allow(u.Host, u.Scheme)
 
+	parts := []string{"_proxy"}
+	if r.sign != nil {
+		parts = append(parts, r.sign(u.Scheme, u.Host))
+	}
+	parts = append(parts, u.Scheme, u.Host, strings.TrimPrefix(u.Path, "/"))
+
 	out := *r.publicURL
-	out.Path = joinURLPath(out.Path, "_proxy", u.Scheme, u.Host, strings.TrimPrefix(u.Path, "/"))
+	out.Path = joinURLPath(out.Path, parts...)
 	out.RawQuery = u.RawQuery
 	out.Fragment = ""
 	rewritten := out.String()

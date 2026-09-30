@@ -55,6 +55,16 @@ allowed = []
 # Set true only when proxemby is behind a trusted reverse proxy.
 trust_proxy_headers = false
 
+[auth]
+# Upstream Emby usernames allowed to use this proxy. Other users cannot log in
+# through proxemby, and requests without a token from an allowed login are
+# rejected. Empty means unrestricted.
+allowed_users = []
+
+# File used to persist accepted logins and the resource URL signing secret.
+# Empty keeps them in memory, so clients must log in again after a restart.
+# state_file = "/var/lib/proxemby/auth.json"
+
 [logging]
 # Log level. Values: "debug", "info", "warn", "error".
 level = "info"

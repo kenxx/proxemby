@@ -48,6 +48,10 @@ hide_client = true
 allowed = ["1.2.3.4", "192.168.0.0/24"]
 trust_proxy_headers = true
 
+[auth]
+allowed_users = ["ken", " "]
+state_file = "/var/lib/proxemby/auth.json"
+
 [logging]
 debug = true
 level = "error"
@@ -85,6 +89,9 @@ time = false
 	}
 	if len(cfg.AllowedClients) != 2 || !cfg.TrustProxyHeaders {
 		t.Fatalf("client config = allowed:%v trust:%v", cfg.AllowedClients, cfg.TrustProxyHeaders)
+	}
+	if len(cfg.AllowedUsers) != 1 || cfg.AllowedUsers[0] != "ken" || cfg.AuthStateFile != "/var/lib/proxemby/auth.json" {
+		t.Fatalf("auth config = users:%v state:%q", cfg.AllowedUsers, cfg.AuthStateFile)
 	}
 	if !cfg.HideClient || cfg.Logging.Level != slog.LevelError || cfg.Logging.Format != "json" || cfg.Logging.Time {
 		t.Fatalf("HideClient/logging = %v/%v/%q/%v, want true/error/json/false", cfg.HideClient, cfg.Logging.Level, cfg.Logging.Format, cfg.Logging.Time)

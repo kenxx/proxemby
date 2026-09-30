@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"proxemby/internal/auth"
 	"proxemby/internal/config"
 	"proxemby/internal/hosts"
 	"proxemby/internal/rewrite"
@@ -29,6 +30,11 @@ type routeProxy struct {
 	resourceProxy  *httputil.ReverseProxy
 	upstreamTarget *url.URL
 	logger         *slog.Logger
+
+	// auth is nil when no allowed users are configured.
+	auth         *auth.Store
+	allowedUsers map[string]struct{}
+	routeKey     string
 }
 
 func NewServer(cfg config.Config) *Server {
@@ -36,12 +42,21 @@ func NewServer(cfg config.Config) *Server {
 }
 
 func NewServerWithLogger(cfg config.Config, logger *slog.Logger) *Server {
+	return NewServerWithStore(cfg, logger, auth.NewMemoryStore())
+}
+
+// NewServerWithStore uses store to keep sessions accepted by the allowed users
+// check. The store is ignored when cfg.AllowedUsers is empty.
+func NewServerWithStore(cfg config.Config, logger *slog.Logger, store *auth.Store) *Server {
+	if len(cfg.AllowedUsers) == 0 {
+		store = nil
+	}
 	server := &Server{
 		handlers: make(map[string]http.Handler, len(cfg.Routes)),
 		logger:   logger,
 	}
 	for _, route := range cfg.Routes {
-		proxy := newRouteProxy(cfg, route, logger.With(
+		proxy := newRouteProxy(cfg, route, store, logger.With(
 			"route", route.PublicURL.Hostname(),
 			"public_url", route.PublicURL.String(),
 			"upstream_url", route.UpstreamURL.String(),

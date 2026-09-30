@@ -20,6 +20,8 @@ type configValues struct {
 	AllowedClients       []string
 	TrustProxyHeaders    bool
 	HideClient           bool
+	AllowedUsers         []string
+	AuthStateFile        string
 	LogLevel             string
 	LogFormat            string
 	LogTime              bool
@@ -43,6 +45,8 @@ type rawConfig struct {
 	AllowedClients       []string
 	TrustProxyHeaders    *bool
 	HideClient           *bool
+	AllowedUsers         []string
+	AuthStateFile        *string
 	Debug                *bool
 	LogLevel             *string
 	LogFormat            *string
@@ -94,6 +98,12 @@ func (values *configValues) applyRaw(raw rawConfig) {
 	}
 	if raw.HideClient != nil {
 		values.HideClient = *raw.HideClient
+	}
+	if raw.AllowedUsers != nil {
+		values.AllowedUsers = cleanStrings(raw.AllowedUsers)
+	}
+	if raw.AuthStateFile != nil {
+		values.AuthStateFile = strings.TrimSpace(*raw.AuthStateFile)
 	}
 	if raw.Debug != nil {
 		if *raw.Debug {
@@ -159,6 +169,12 @@ func (values *configValues) applyEnv(env map[string]string) error {
 		parsed := parseBool(value)
 		raw.HideClient = &parsed
 	}
+	if value, ok := nonEmptyEnv(env, "PROXEMBY_ALLOWED_USERS"); ok {
+		raw.AllowedUsers = splitCSV(value)
+	}
+	if value, ok := nonEmptyEnv(env, "PROXEMBY_AUTH_STATE_FILE"); ok {
+		raw.AuthStateFile = &value
+	}
 	if value, ok := env["PROXEMBY_DEBUG"]; ok {
 		parsed := parseBool(value)
 		raw.Debug = &parsed
@@ -214,6 +230,8 @@ func (values configValues) config() (Config, error) {
 		AllowedClients:       allowedClients,
 		TrustProxyHeaders:    values.TrustProxyHeaders,
 		HideClient:           values.HideClient,
+		AllowedUsers:         cleanStrings(values.AllowedUsers),
+		AuthStateFile:        strings.TrimSpace(values.AuthStateFile),
 		Logging:              logConfig,
 	}, nil
 }

@@ -42,7 +42,11 @@ func noCompressionTransport() http.RoundTripper {
 }
 
 func (s *routeProxy) handleResourceProxy(w http.ResponseWriter, req *http.Request) {
-	scheme, remainder, ok := strings.Cut(strings.TrimPrefix(req.URL.Path, resourcePrefix), "/")
+	first, remainder, ok := strings.Cut(strings.TrimPrefix(req.URL.Path, resourcePrefix), "/")
+	scheme := first
+	if ok && s.auth != nil && !isHTTPProxyScheme(first) {
+		scheme, remainder, ok = strings.Cut(remainder, "/")
+	}
 	if !ok || !isHTTPProxyScheme(scheme) {
 		s.logResourceProxyDecision(req, false, "invalid_scheme", scheme, "")
 		http.Error(w, "missing or invalid proxied resource scheme", http.StatusBadRequest)
@@ -53,6 +57,13 @@ func (s *routeProxy) handleResourceProxy(w http.ResponseWriter, req *http.Reques
 		s.logResourceProxyDecision(req, false, "missing_host", scheme, host)
 		http.Error(w, "missing proxied resource host", http.StatusBadRequest)
 		return
+	}
+	if s.auth != nil {
+		if authorized, reason := s.authorizeResource(req, first, scheme, host); !authorized {
+			s.logResourceProxyDecision(req, false, reason, scheme, host)
+			http.Error(w, "proxied resource is not authorized", http.StatusForbidden)
+			return
+		}
 	}
 	_, allowed := s.registry.Lookup(host)
 	if !allowed {

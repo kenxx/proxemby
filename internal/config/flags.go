@@ -48,6 +48,8 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 		allowedClients      string
 		trustProxyHeaders   bool
 		hideClient          bool
+		allowedUsers        string
+		authStateFile       string
 		debug               bool
 		logLevel            string
 		logFormat           string
@@ -70,6 +72,8 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 	flags.StringVar(&allowedClients, "allowed-clients", "", "comma-separated client IP/CIDR allowlist")
 	flags.BoolVar(&trustProxyHeaders, "trust-proxy-headers", false, "trust proxy client IP headers")
 	flags.BoolVar(&hideClient, "hide-client", false, "hide client identity headers from upstream")
+	flags.StringVar(&allowedUsers, "allowed-users", "", "comma-separated upstream Emby username allowlist")
+	flags.StringVar(&authStateFile, "auth-state-file", "", "file used to persist login sessions")
 	flags.BoolVar(&debug, "d", false, "enable debug logging")
 	flags.BoolVar(&debug, "debug", false, "enable debug logging")
 	flags.StringVar(&logLevel, "log-level", "", "log level")
@@ -115,6 +119,10 @@ func parseConfigFlags(args []string) (cliConfig, error) {
 			cli.TrustProxyHeaders = &trustProxyHeaders
 		case "hide-client":
 			cli.HideClient = &hideClient
+		case "allowed-users":
+			cli.AllowedUsers = splitCSV(allowedUsers)
+		case "auth-state-file":
+			cli.AuthStateFile = &authStateFile
 		case "d", "debug":
 			cli.Debug = &debug
 		case "log-level":

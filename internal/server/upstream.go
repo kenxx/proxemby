@@ -1,14 +1,11 @@
 package server
 
 import (
-	"bytes"
 	"errors"
-	"io"
 	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
-	"strconv"
 
 	"proxemby/internal/logging"
 	"proxemby/internal/rewrite"
@@ -18,7 +15,7 @@ func (s *routeProxy) newUpstreamProxy() *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
 		Transport: noCompressionTransport(),
 		Rewrite: func(req *httputil.ProxyRequest) {
-			playbackInfo := isPlaybackInfoPath(req.In.URL.Path)
+			bufferResponse := isPlaybackInfoPath(req.In.URL.Path) || (s.auth != nil && isLoginPath(req.In.URL.Path))
 			req.SetURL(s.upstreamTarget)
 			req.Out.Host = s.upstreamTarget.Host
 			if s.cfg.HideClient {
@@ -27,7 +24,7 @@ func (s *routeProxy) newUpstreamProxy() *httputil.ReverseProxy {
 			} else {
 				req.SetXForwarded()
 			}
-			if playbackInfo {
+			if bufferResponse {
 				req.Out.Header.Del("Accept-Encoding")
 			}
 		},
@@ -53,6 +50,9 @@ func deleteProxyIdentityHeaders(header http.Header) {
 }
 
 func (s *routeProxy) modifyUpstreamResponse(resp *http.Response) error {
+	if s.auth != nil && isLoginPath(resp.Request.URL.Path) {
+		return s.handleLoginResponse(resp)
+	}
 	if !isPlaybackInfoPath(resp.Request.URL.Path) || !isJSONContentType(resp.Header.Get("Content-Type")) {
 		return nil
 	}
@@ -73,10 +73,7 @@ func (s *routeProxy) modifyUpstreamResponse(resp *http.Response) error {
 	}
 	s.logRewriteEvents(resp.Request, events)
 
-	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
-	resp.ContentLength = int64(len(rewritten))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
-	resp.Header.Del("Content-Encoding")
+	setResponseBody(resp, rewritten)
 	return nil
 }
 

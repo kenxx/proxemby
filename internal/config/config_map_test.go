@@ -206,3 +206,20 @@ func TestConfigFromSourcesIgnoresMissingDefaultConfig(t *testing.T) {
 		t.Fatalf("UpstreamURL = %q, want https://cli.emby.com", cfg.Routes[0].UpstreamURL.String())
 	}
 }
+
+func TestConfigFromMapAllowedUsers(t *testing.T) {
+	cfg, err := ConfigFromMap(map[string]string{
+		"PROXEMBY_ROUTE":           "https://us.emby.com,http://proxemby",
+		"PROXEMBY_ALLOWED_USERS":   "ken, alice",
+		"PROXEMBY_AUTH_STATE_FILE": "/tmp/auth.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AllowedUsers) != 2 || cfg.AllowedUsers[1] != "alice" {
+		t.Fatalf("AllowedUsers = %v, want [ken alice]", cfg.AllowedUsers)
+	}
+	if cfg.AuthStateFile != "/tmp/auth.json" {
+		t.Fatalf("AuthStateFile = %q, want /tmp/auth.json", cfg.AuthStateFile)
+	}
+}

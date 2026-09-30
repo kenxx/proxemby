@@ -28,6 +28,8 @@ type Config struct {
 	AllowedClients       []netip.Prefix
 	TrustProxyHeaders    bool
 	HideClient           bool
+	AllowedUsers         []string
+	AuthStateFile        string
 	Logging              logging.Config
 }
 

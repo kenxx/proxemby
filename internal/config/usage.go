@@ -23,6 +23,8 @@ Options:
       --allowed-clients CLIENTS      Comma-separated client IP/CIDR allowlist
       --trust-proxy-headers          Trust X-Forwarded-For/X-Real-IP for client checks
       --hide-client                  Hide client identity headers from upstream
+      --allowed-users USERS          Comma-separated upstream Emby usernames allowed to log in
+      --auth-state-file PATH         File used to persist login sessions
       --log-level LEVEL              Log level: debug, info, warn, or error
       --log-format FORMAT            Log format: text or json
       --log-time                     Include time in log output

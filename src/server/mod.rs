@@ -5,6 +5,7 @@ mod auth_gate;
 mod body;
 mod client_filter;
 mod route;
+mod shutdown;
 mod tls;
 
 use std::collections::HashMap;
@@ -26,6 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 
 pub use body::ProxyBody;
+pub use shutdown::{Shutdown, ShutdownSignal};
 pub use tls::{client_config, serve_tls, server_config};
 
 use crate::auth::Store;
@@ -155,8 +157,15 @@ pub(crate) fn request_host<B>(req: &Request<B>) -> &str {
 }
 
 /// Serves one client connection (HTTP/1.1 with upgrades, or HTTP/2).
-pub async fn serve_connection<IO>(io: IO, server: Arc<Server>, conn: ConnInfo)
-where
+///
+/// When `signal` fires, in-flight requests finish and the connection closes:
+/// HTTP/1.1 stops keep-alive and HTTP/2 sends GOAWAY.
+pub async fn serve_connection<IO>(
+    io: IO,
+    server: Arc<Server>,
+    conn: ConnInfo,
+    signal: ShutdownSignal,
+) where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let service = service_fn(move |req| {
@@ -169,24 +178,51 @@ where
         .http2()
         .timer(TokioTimer::new())
         .adaptive_window(true);
-    let _ = builder
-        .serve_connection_with_upgrades(TokioIo::new(io), service)
-        .await;
+    let connection = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
+    tokio::pin!(connection);
+    tokio::select! {
+        _ = connection.as_mut() => return,
+        _ = signal.triggered() => {}
+    }
+    connection.as_mut().graceful_shutdown();
+    let _ = connection.await;
 }
 
-/// Accepts plain HTTP connections forever.
-pub async fn serve_http(listener: TcpListener, server: Arc<Server>) -> std::io::Result<()> {
-    loop {
-        let (stream, remote) = match listener.accept().await {
-            Ok(accepted) => accepted,
-            Err(e) if is_transient_accept_error(&e) => {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
+/// Accepts plain HTTP connections until `signal` fires.
+pub async fn serve_http(
+    listener: TcpListener,
+    server: Arc<Server>,
+    signal: ShutdownSignal,
+) -> std::io::Result<()> {
+    while let Some((stream, remote)) = accept(&listener, &signal).await? {
         let conn = prepare_stream(&stream, remote, false);
-        tokio::spawn(serve_connection(stream, server.clone(), conn));
+        tokio::spawn(serve_connection(
+            stream,
+            server.clone(),
+            conn,
+            signal.clone(),
+        ));
+    }
+    Ok(())
+}
+
+/// Waits for the next connection, or returns `None` once shutdown starts.
+pub(crate) async fn accept(
+    listener: &TcpListener,
+    signal: &ShutdownSignal,
+) -> std::io::Result<Option<(TcpStream, SocketAddr)>> {
+    loop {
+        tokio::select! {
+            biased;
+            _ = signal.triggered() => return Ok(None),
+            accepted = listener.accept() => match accepted {
+                Ok(accepted) => return Ok(Some(accepted)),
+                Err(e) if is_transient_accept_error(&e) => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(e) => return Err(e),
+            },
+        }
     }
 }
 
@@ -198,7 +234,7 @@ pub fn prepare_stream(stream: &TcpStream, remote: SocketAddr, tls: bool) -> Conn
     }
 }
 
-pub fn is_transient_accept_error(e: &std::io::Error) -> bool {
+fn is_transient_accept_error(e: &std::io::Error) -> bool {
     use std::io::ErrorKind::*;
     matches!(
         e.kind(),

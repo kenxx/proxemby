@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio_rustls::LazyConfigAcceptor;
 
-use super::{Server, is_transient_accept_error, prepare_stream, serve_connection};
+use super::{Server, ShutdownSignal, accept, prepare_stream, serve_connection};
 
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -51,27 +51,21 @@ pub fn server_config(resolver: Arc<dyn ResolvesServerCert>) -> ServerConfig {
     config
 }
 
-/// Accepts TLS connections forever. ACME TLS-ALPN-01 validation handshakes
-/// are answered with `challenge` when it is set.
+/// Accepts TLS connections until `signal` fires. ACME TLS-ALPN-01 validation
+/// handshakes are answered with `challenge` when it is set.
 pub async fn serve_tls(
     listener: TcpListener,
     server: Arc<Server>,
     config: Arc<ServerConfig>,
     challenge: Option<Arc<ServerConfig>>,
+    signal: ShutdownSignal,
 ) -> std::io::Result<()> {
-    loop {
-        let (stream, remote) = match listener.accept().await {
-            Ok(accepted) => accepted,
-            Err(e) if is_transient_accept_error(&e) => {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
+    while let Some((stream, remote)) = accept(&listener, &signal).await? {
         let conn = prepare_stream(&stream, remote, true);
         let server = server.clone();
         let config = config.clone();
         let challenge = challenge.clone();
+        let signal = signal.clone();
         tokio::spawn(async move {
             let handshake = async {
                 let start = LazyConfigAcceptor::new(Acceptor::default(), stream).await?;
@@ -86,8 +80,9 @@ pub async fn serve_tls(
             };
             if let Ok(Ok(Some(tls))) = tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, handshake).await
             {
-                serve_connection(tls, server, conn).await;
+                serve_connection(tls, server, conn, signal).await;
             }
         });
     }
+    Ok(())
 }

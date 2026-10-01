@@ -112,6 +112,10 @@ allowed_hosts = ["vod.us.emby.com", "cdn.example.com"]
 # Optional. Default: 8388608.
 playbackinfo_max_bytes = 8388608
 
+# Optional. Default: 60. Seconds to wait for upstream response headers before
+# answering 504. Streaming bodies are not limited. 0 disables the timeout.
+response_header_timeout = 60
+
 # Optional. Default: false.
 hide_client = false
 
@@ -168,7 +172,9 @@ Command-line flags:
 | `--log-level` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `--log-format` | Log format: `text` or `json`. |
 | `--log-time` | Include time in log output. Use `--log-time=false` to disable. |
+| `--response-header-timeout` | Seconds to wait for upstream response headers; `0` disables. |
 | `--help` | Show command-line help. |
+| `--version` | Show the version. |
 
 Environment variables:
 
@@ -182,6 +188,7 @@ Environment variables:
 | `PROXEMBY_ACME_CACHE_DIR` | no | `.acme-cache` | ACME certificate cache directory. Relative paths are resolved from the proxemby process working directory. |
 | `PROXEMBY_ALLOWED_HOSTS` | no | | Comma-separated initial resource proxy host allowlist. |
 | `PROXEMBY_PLAYBACKINFO_MAX_BYTES` | no | `8388608` | Maximum PlaybackInfo JSON body size to buffer for URL rewriting. |
+| `PROXEMBY_RESPONSE_HEADER_TIMEOUT` | no | `60` | Seconds to wait for upstream response headers; `0` disables. |
 | `PROXEMBY_ALLOWED_CLIENTS` | no | | Comma-separated client IP/CIDR allowlist, for example `1.2.3.4,192.168.0.0/32`. Empty means unrestricted. |
 | `PROXEMBY_TRUST_PROXY_HEADERS` | no | `false` | Use `X-Forwarded-For`/`X-Real-IP` for client IP checks when proxemby is behind a trusted proxy. |
 | `PROXEMBY_HIDE_CLIENT` | no | `false` | Do not send `X-Forwarded-*` client/proxy headers to the upstream Emby server. |
@@ -208,6 +215,9 @@ Environment variables:
 - With allowed users set, rewritten resource URLs carry a signature as `public_url/_proxy/{signature}/{scheme}/{host}/{path}`, so `/_proxy/` only serves URLs handed out in an authorized `PlaybackInfo` response (or requests with a valid access token). Existing clients need to log in again after enabling it. Set `PROXEMBY_AUTH_STATE_FILE` so logins and signatures survive restarts.
 - Set `PROXEMBY_HIDE_CLIENT=true` when the upstream should see requests as coming directly from the proxemby server.
 - Set `PROXEMBY_LOG_LEVEL=debug` to inspect requests and rule decisions without logging common token query values.
+- If an upstream does not send response headers within `response_header_timeout`, proxemby answers `504`. Once headers arrive, the body streams without a deadline.
+- On `SIGTERM` or `SIGINT`, proxemby stops accepting connections and gives open requests up to 10 seconds to finish before exiting.
+- Upgrading the Debian package reloads systemd and restarts the service if it is running. A fresh install is not started automatically.
 
 ## Development
 

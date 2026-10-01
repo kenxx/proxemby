@@ -37,4 +37,38 @@ cat >"$package_root/DEBIAN/conffiles" <<EOF
 /etc/proxemby/proxemby.toml
 EOF
 
+# Reload systemd after the unit file changes and restart a running service so
+# upgrades take effect. A fresh install is not started: routes must be
+# configured first.
+cat >"$package_root/DEBIAN/postinst" <<'SCRIPT'
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ] && [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl try-restart proxemby.service >/dev/null 2>&1 || true
+fi
+exit 0
+SCRIPT
+
+cat >"$package_root/DEBIAN/prerm" <<'SCRIPT'
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ] && [ -d /run/systemd/system ]; then
+  systemctl stop proxemby.service >/dev/null 2>&1 || true
+  systemctl disable proxemby.service >/dev/null 2>&1 || true
+fi
+exit 0
+SCRIPT
+
+cat >"$package_root/DEBIAN/postrm" <<'SCRIPT'
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+exit 0
+SCRIPT
+
+chmod 0755 "$package_root/DEBIAN/postinst" "$package_root/DEBIAN/prerm" "$package_root/DEBIAN/postrm"
+
 dpkg-deb --build --root-owner-group "$package_root" "dist/proxemby_${version}_amd64.deb"

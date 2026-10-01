@@ -2,6 +2,7 @@
 //! variables < command-line flags.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -12,6 +13,7 @@ const DEFAULT_HTTP_ADDR: &str = ":8080";
 const DEFAULT_TLS_ADDR: &str = ":443";
 const DEFAULT_ACME_CACHE_DIR: &str = ".acme-cache";
 pub const DEFAULT_PLAYBACKINFO_MAX_BYTES: i64 = 8 << 20;
+pub const DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS: i64 = 60;
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/proxemby/proxemby.toml";
 
 #[derive(Clone, Debug)]
@@ -32,6 +34,8 @@ pub struct Config {
     pub acme_cache_dir: String,
     pub allowed_hosts: Vec<String>,
     pub playbackinfo_max_bytes: i64,
+    /// How long to wait for upstream response headers. `None` waits forever.
+    pub response_header_timeout: Option<Duration>,
     pub allowed_clients: Vec<IpPrefix>,
     pub trust_proxy_headers: bool,
     pub hide_client: bool,
@@ -53,6 +57,9 @@ impl Config {
             acme_cache_dir: DEFAULT_ACME_CACHE_DIR.into(),
             allowed_hosts: Vec::new(),
             playbackinfo_max_bytes: DEFAULT_PLAYBACKINFO_MAX_BYTES,
+            response_header_timeout: Some(Duration::from_secs(
+                DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS as u64,
+            )),
             allowed_clients: Vec::new(),
             trust_proxy_headers: false,
             hide_client: false,
@@ -67,6 +74,8 @@ impl Config {
 pub enum Error {
     /// `--help` was requested.
     Help,
+    /// `--version` was requested.
+    Version,
     Invalid(String),
 }
 
@@ -74,6 +83,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Help => f.write_str("help requested"),
+            Error::Version => f.write_str("version requested"),
             Error::Invalid(msg) => f.write_str(msg),
         }
     }
@@ -108,6 +118,7 @@ struct Values {
     acme_cache_dir: String,
     allowed_hosts: Vec<String>,
     playbackinfo_max_bytes: i64,
+    response_header_timeout: i64,
     allowed_clients: Vec<String>,
     trust_proxy_headers: bool,
     hide_client: bool,
@@ -128,6 +139,7 @@ struct Raw {
     acme_cache_dir: Option<String>,
     allowed_hosts: Option<Vec<String>>,
     playbackinfo_max_bytes: Option<i64>,
+    response_header_timeout: Option<i64>,
     allowed_clients: Option<Vec<String>>,
     trust_proxy_headers: Option<bool>,
     hide_client: Option<bool>,
@@ -150,6 +162,7 @@ impl Default for Values {
             acme_cache_dir: DEFAULT_ACME_CACHE_DIR.into(),
             allowed_hosts: Vec::new(),
             playbackinfo_max_bytes: DEFAULT_PLAYBACKINFO_MAX_BYTES,
+            response_header_timeout: DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS,
             allowed_clients: Vec::new(),
             trust_proxy_headers: false,
             hide_client: false,
@@ -195,6 +208,13 @@ fn parse_bool(raw: &str) -> bool {
     )
 }
 
+fn parse_non_negative_int(raw: &str, name: &str) -> Result<i64, Error> {
+    match raw.trim().parse::<i64>() {
+        Ok(value) if value >= 0 => Ok(value),
+        _ => Err(format!("{name} must be a non-negative integer").into()),
+    }
+}
+
 fn parse_positive_int(raw: &str, name: &str) -> Result<i64, Error> {
     match raw.trim().parse::<i64>() {
         Ok(value) if value > 0 => Ok(value),
@@ -227,6 +247,9 @@ impl Values {
         }
         if let Some(v) = raw.playbackinfo_max_bytes {
             self.playbackinfo_max_bytes = v;
+        }
+        if let Some(v) = raw.response_header_timeout {
+            self.response_header_timeout = v;
         }
         if let Some(v) = raw.allowed_clients {
             self.allowed_clients = clean_strings(&v);
@@ -282,6 +305,12 @@ impl Values {
             raw.playbackinfo_max_bytes =
                 Some(parse_positive_int(&v, "PROXEMBY_PLAYBACKINFO_MAX_BYTES")?);
         }
+        if let Some(v) = non_empty("PROXEMBY_RESPONSE_HEADER_TIMEOUT") {
+            raw.response_header_timeout = Some(parse_non_negative_int(
+                &v,
+                "PROXEMBY_RESPONSE_HEADER_TIMEOUT",
+            )?);
+        }
         raw.allowed_clients = non_empty("PROXEMBY_ALLOWED_CLIENTS").map(|v| split_csv(&v));
         raw.trust_proxy_headers = boolean("PROXEMBY_TRUST_PROXY_HEADERS");
         raw.hide_client = boolean("PROXEMBY_HIDE_CLIENT");
@@ -298,6 +327,9 @@ impl Values {
     fn config(self) -> Result<Config, Error> {
         if self.playbackinfo_max_bytes <= 0 {
             return Err("playbackinfo max bytes must be a positive integer".into());
+        }
+        if self.response_header_timeout < 0 {
+            return Err("response header timeout must not be negative".into());
         }
         let allowed_clients = self
             .allowed_clients
@@ -322,6 +354,8 @@ impl Values {
             acme_cache_dir: self.acme_cache_dir,
             allowed_hosts: clean_strings(&self.allowed_hosts),
             playbackinfo_max_bytes: self.playbackinfo_max_bytes,
+            response_header_timeout: (self.response_header_timeout > 0)
+                .then(|| Duration::from_secs(self.response_header_timeout as u64)),
             allowed_clients,
             trust_proxy_headers: self.trust_proxy_headers,
             hide_client: self.hide_client,
@@ -456,6 +490,7 @@ struct TomlTls {
 struct TomlProxy {
     allowed_hosts: Option<Vec<String>>,
     playbackinfo_max_bytes: Option<i64>,
+    response_header_timeout: Option<i64>,
     hide_client: Option<bool>,
 }
 
@@ -501,6 +536,7 @@ fn raw_from_toml_file(path: &str) -> Result<Raw, std::io::Error> {
         acme_cache_dir: cfg.tls.acme_cache_dir,
         allowed_hosts: cfg.proxy.allowed_hosts,
         playbackinfo_max_bytes: cfg.proxy.playbackinfo_max_bytes,
+        response_header_timeout: cfg.proxy.response_header_timeout,
         allowed_clients: cfg.clients.allowed,
         trust_proxy_headers: cfg.clients.trust_proxy_headers,
         hide_client: cfg.proxy.hide_client,
@@ -548,7 +584,13 @@ const FLAGS: &[(&[&str], &str, FlagKind)] = &[
     (&["log-level"], "log-level", FlagKind::Str),
     (&["log-format"], "log-format", FlagKind::Str),
     (&["log-time"], "log-time", FlagKind::Bool),
+    (
+        &["response-header-timeout"],
+        "response-header-timeout",
+        FlagKind::Int,
+    ),
     (&["help"], "help", FlagKind::Bool),
+    (&["version"], "version", FlagKind::Bool),
 ];
 
 fn parse_go_bool(raw: &str) -> Option<bool> {
@@ -563,6 +605,7 @@ struct Cli {
     raw: Raw,
     config_path: Option<String>,
     help: bool,
+    version: bool,
 }
 
 /// Parses flags with the same rules as Go's `flag` package: `-name` and
@@ -640,6 +683,7 @@ fn parse_flags(args: &[String]) -> Result<Cli, Error> {
         raw: Raw::default(),
         config_path: None,
         help: false,
+        version: false,
     };
     let as_bool = |v: &String| parse_go_bool(v).unwrap_or(false);
     for (key, value) in values {
@@ -663,7 +707,9 @@ fn parse_flags(args: &[String]) -> Result<Cli, Error> {
             "log-level" => raw.log_level = Some(value),
             "log-format" => raw.log_format = Some(value),
             "log-time" => raw.log_time = Some(as_bool(&value)),
+            "response-header-timeout" => raw.response_header_timeout = value.trim().parse().ok(),
             "help" => cli.help = as_bool(&value),
+            "version" => cli.version = as_bool(&value),
             _ => {}
         }
     }
@@ -716,6 +762,9 @@ where
     if cli.help {
         return Err(Error::Help);
     }
+    if cli.version {
+        return Err(Error::Version);
+    }
     let mut values = Values::default();
     let explicit = cli.config_path.is_some();
     let path = cli
@@ -750,6 +799,7 @@ Options:
       --acme-email EMAIL             ACME account email
       --acme-cache-dir DIR           ACME certificate cache directory
       --playbackinfo-max-bytes N     Maximum PlaybackInfo JSON body size
+      --response-header-timeout SECS Upstream response header timeout; 0 disables (default 60)
       --allowed-clients CLIENTS      Comma-separated client IP/CIDR allowlist
       --trust-proxy-headers          Trust X-Forwarded-For/X-Real-IP for client checks
       --hide-client                  Hide client identity headers from upstream
@@ -759,6 +809,7 @@ Options:
       --log-format FORMAT            Log format: text or json
       --log-time                     Include time in log output
       --help                         Show this help
+      --version                      Show the version
 ";
 
 #[cfg(test)]
@@ -811,6 +862,7 @@ mod tests {
         assert_eq!(cfg.tls_addr, ":443");
         assert_eq!(cfg.acme_cache_dir, ".acme-cache");
         assert_eq!(cfg.playbackinfo_max_bytes, DEFAULT_PLAYBACKINFO_MAX_BYTES);
+        assert_eq!(cfg.response_header_timeout, Some(Duration::from_secs(60)));
         assert!(cfg.allowed_clients.is_empty());
         assert!(!cfg.hide_client);
         assert_eq!(cfg.logging, crate::logging::Config::default());
@@ -927,6 +979,7 @@ acme_cache_dir = "/tmp/proxemby-acme"
 [proxy]
 allowed_hosts = ["vod.example.com", "cdn.example.com"]
 playbackinfo_max_bytes = 2048
+response_header_timeout = 0
 hide_client = true
 
 [clients]
@@ -961,6 +1014,7 @@ time = false
         assert_eq!(cfg.acme_cache_dir, "/tmp/proxemby-acme");
         assert_eq!(cfg.allowed_hosts.len(), 2);
         assert_eq!(cfg.playbackinfo_max_bytes, 2048);
+        assert_eq!(cfg.response_header_timeout, None);
         assert_eq!(cfg.allowed_clients.len(), 2);
         assert!(cfg.trust_proxy_headers);
         assert_eq!(cfg.allowed_users, vec!["ken"]);
@@ -1124,8 +1178,32 @@ level = "warn"
     }
 
     #[test]
+    fn response_header_timeout() {
+        let route = ("PROXEMBY_ROUTE", "https://us.emby.com,http://proxemby");
+        let cfg = from_env_map([route, ("PROXEMBY_RESPONSE_HEADER_TIMEOUT", "5")]).unwrap();
+        assert_eq!(cfg.response_header_timeout, Some(Duration::from_secs(5)));
+        assert!(from_env_map([route, ("PROXEMBY_RESPONSE_HEADER_TIMEOUT", "-1")]).is_err());
+
+        let cfg = sources(
+            &["--route", route.1, "--response-header-timeout", "0"],
+            &[("PROXEMBY_RESPONSE_HEADER_TIMEOUT", "5")],
+        )
+        .unwrap();
+        assert_eq!(cfg.response_header_timeout, None);
+        assert!(
+            sources(
+                &["--route", route.1, "--response-header-timeout", "-3"],
+                &[]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn help() {
         assert!(matches!(sources(&["--help"], &[]), Err(Error::Help)));
+        assert!(matches!(sources(&["--version"], &[]), Err(Error::Version)));
+        assert!(matches!(sources(&["-version"], &[]), Err(Error::Version)));
         assert!(matches!(sources(&["-help"], &[]), Err(Error::Invalid(_))));
     }
 }

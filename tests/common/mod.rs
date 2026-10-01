@@ -20,7 +20,7 @@ use tokio::net::TcpListener;
 
 use proxemby::config::{Config, Route};
 use proxemby::logging::{self, Level, Logger};
-use proxemby::server::{self, Server};
+use proxemby::server::{self, Server, Shutdown, ShutdownSignal};
 use proxemby::util::HttpUrl;
 
 pub type Handler = Arc<
@@ -136,7 +136,7 @@ pub async fn spawn_proxy(cfg: &Config, logger: Logger) -> SocketAddr {
     let proxy = Server::new(cfg, logger, None);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(server::serve_http(listener, proxy));
+    tokio::spawn(server::serve_http(listener, proxy, no_shutdown()));
     addr
 }
 
@@ -206,4 +206,9 @@ impl Recorder {
 
 pub fn host_of(url: &str) -> String {
     url.trim_start_matches("http://").to_owned()
+}
+
+/// A shutdown signal that never fires, for servers that live as long as the test.
+pub fn no_shutdown() -> ShutdownSignal {
+    Box::leak(Box::new(Shutdown::new())).signal()
 }

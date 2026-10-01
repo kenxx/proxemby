@@ -45,7 +45,13 @@ async fn serves_http2_over_tls() {
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(server::serve_tls(listener, proxy, tls_config, None));
+    tokio::spawn(server::serve_tls(
+        listener,
+        proxy,
+        tls_config,
+        None,
+        no_shutdown(),
+    ));
 
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert.cert.der().clone()).unwrap();

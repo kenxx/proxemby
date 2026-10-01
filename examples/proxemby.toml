@@ -45,6 +45,10 @@ allowed_hosts = ["vod.us.emby.com", "cdn.example.com"]
 # Maximum PlaybackInfo JSON response size to buffer while rewriting URLs.
 playbackinfo_max_bytes = 8388608
 
+# Seconds to wait for upstream response headers before answering 504.
+# Streaming bodies are not limited. 0 disables the timeout.
+response_header_timeout = 60
+
 # Set true to avoid forwarding X-Forwarded-* client identity headers upstream.
 hide_client = false
 

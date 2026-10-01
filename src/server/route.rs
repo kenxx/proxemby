@@ -12,7 +12,7 @@ use hyper_util::rt::TokioIo;
 use super::auth_gate::{emby_path_segments, is_login_path, is_public_emby_path, match_segments};
 use super::client_filter::{client_addr, header_str, is_allowed};
 use super::{
-    Clients, ConnInfo, ProxyBody, RESOURCE_PREFIX, empty_response, error_chain,
+    Clients, ConnInfo, HttpClient, ProxyBody, RESOURCE_PREFIX, empty_response, error_chain,
     prepare_outbound_headers, remove_hop_by_hop, request_host, text_response, upgrade_type,
 };
 use crate::auth::{Session, Store, request_token};
@@ -318,15 +318,9 @@ impl RouteProxy {
         } else {
             &self.clients.default
         };
-        let mut resp = match client.request(out).await {
+        let mut resp = match self.send_upstream(client, out).await {
             Ok(resp) => resp,
-            Err(e) => {
-                error!(
-                    self.logger,
-                    &format!("http: proxy error: {}", error_chain(&e))
-                );
-                return empty_response(StatusCode::BAD_GATEWAY);
-            }
+            Err(status) => return empty_response(status),
         };
 
         if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -630,19 +624,44 @@ impl RouteProxy {
         *out.version_mut() = Version::HTTP_11;
         *out.headers_mut() = headers;
 
-        match self.clients.default.request(out).await {
+        match self.send_upstream(&self.clients.default, out).await {
             Ok(mut resp) => {
                 remove_hop_by_hop(resp.headers_mut());
                 resp.map(ProxyBody::Incoming)
             }
-            Err(e) => {
-                error!(
-                    self.logger,
-                    &format!("http: proxy error: {}", error_chain(&e))
-                );
-                empty_response(StatusCode::BAD_GATEWAY)
-            }
+            Err(status) => empty_response(status),
         }
+    }
+
+    /// Sends a request upstream and waits at most the configured response
+    /// header timeout. The body is streamed afterwards without a deadline.
+    /// Failures are logged and returned as the status to answer with.
+    async fn send_upstream(
+        &self,
+        client: &HttpClient,
+        req: Request<ProxyBody>,
+    ) -> Result<Response<Incoming>, StatusCode> {
+        let result = match self.cfg.response_header_timeout {
+            Some(limit) => match tokio::time::timeout(limit, client.request(req)).await {
+                Ok(result) => result,
+                Err(_) => {
+                    error!(
+                        self.logger,
+                        "http: proxy error: timeout awaiting response headers",
+                        "timeout" => limit,
+                    );
+                    return Err(StatusCode::GATEWAY_TIMEOUT);
+                }
+            },
+            None => client.request(req).await,
+        };
+        result.map_err(|e| {
+            error!(
+                self.logger,
+                &format!("http: proxy error: {}", error_chain(&e))
+            );
+            StatusCode::BAD_GATEWAY
+        })
     }
 
     fn log_resource_decision(

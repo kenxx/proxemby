@@ -320,7 +320,7 @@ impl RouteProxy {
         };
         let mut resp = match self.send_upstream(client, out).await {
             Ok(resp) => resp,
-            Err(resp) => return resp,
+            Err(status) => return empty_response(status),
         };
 
         if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -629,17 +629,18 @@ impl RouteProxy {
                 remove_hop_by_hop(resp.headers_mut());
                 resp.map(ProxyBody::Incoming)
             }
-            Err(resp) => resp,
+            Err(status) => empty_response(status),
         }
     }
 
     /// Sends a request upstream and waits at most the configured response
     /// header timeout. The body is streamed afterwards without a deadline.
+    /// Failures are logged and returned as the status to answer with.
     async fn send_upstream(
         &self,
         client: &HttpClient,
         req: Request<ProxyBody>,
-    ) -> Result<Response<Incoming>, Response<ProxyBody>> {
+    ) -> Result<Response<Incoming>, StatusCode> {
         let result = match self.cfg.response_header_timeout {
             Some(limit) => match tokio::time::timeout(limit, client.request(req)).await {
                 Ok(result) => result,
@@ -649,7 +650,7 @@ impl RouteProxy {
                         "http: proxy error: timeout awaiting response headers",
                         "timeout" => limit,
                     );
-                    return Err(empty_response(StatusCode::GATEWAY_TIMEOUT));
+                    return Err(StatusCode::GATEWAY_TIMEOUT);
                 }
             },
             None => client.request(req).await,
@@ -659,7 +660,7 @@ impl RouteProxy {
                 self.logger,
                 &format!("http: proxy error: {}", error_chain(&e))
             );
-            empty_response(StatusCode::BAD_GATEWAY)
+            StatusCode::BAD_GATEWAY
         })
     }
 

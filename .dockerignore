@@ -1,6 +1,7 @@
 .git
 .github
 dist
+target
 tmp
 *.deb
 *.tar.gz

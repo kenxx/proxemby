@@ -1,6 +1,6 @@
 {
   "name": "proxemby",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Release tooling for proxemby. The application itself is the Rust crate in Cargo.toml.",
   "scripts": {

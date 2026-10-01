@@ -6,3 +6,4 @@ tmp
 *.deb
 *.tar.gz
 Dockerfile
+node_modules

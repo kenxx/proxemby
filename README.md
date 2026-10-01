@@ -223,3 +223,14 @@ cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 musl builds use mimalloc; `.cargo/config.toml` tunes it to commit memory on demand.
+
+Releases are managed with [Changesets](https://github.com/changesets/changesets).
+Add a changeset for each user-facing change:
+
+```sh
+npm ci
+npx changeset
+```
+
+Merging to `main` opens a release pull request; merging that pull request tags
+the version and publishes the release binaries, Debian package and Docker image.

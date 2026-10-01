@@ -1,0 +1,13 @@
+{
+  "name": "proxemby",
+  "version": "0.1.2",
+  "private": true,
+  "description": "Release tooling for proxemby. The application itself is the Rust crate in Cargo.toml.",
+  "scripts": {
+    "changeset": "changeset",
+    "version": "changeset version && node scripts/sync-version.mjs"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3"
+  }
+}

@@ -12,6 +12,7 @@ use crate::util::{HttpUrl, IpPrefix};
 const DEFAULT_HTTP_ADDR: &str = ":8080";
 const DEFAULT_TLS_ADDR: &str = ":443";
 const DEFAULT_ACME_CACHE_DIR: &str = ".acme-cache";
+const DEFAULT_STATS_ADDR: &str = "127.0.0.1:9180";
 pub const DEFAULT_PLAYBACKINFO_MAX_BYTES: i64 = 8 << 20;
 pub const DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS: i64 = 60;
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/proxemby/proxemby.toml";
@@ -41,6 +42,10 @@ pub struct Config {
     pub hide_client: bool,
     pub allowed_users: Vec<String>,
     pub auth_state_file: String,
+    /// Admin listener for traffic statistics; empty disables it.
+    pub stats_addr: String,
+    /// File that keeps per-day traffic totals; empty keeps them in memory.
+    pub stats_file: String,
     pub logging: logging::Config,
 }
 
@@ -65,6 +70,8 @@ impl Config {
             hide_client: false,
             allowed_users: Vec::new(),
             auth_state_file: String::new(),
+            stats_addr: DEFAULT_STATS_ADDR.into(),
+            stats_file: String::new(),
             logging: logging::Config::default(),
         }
     }
@@ -124,6 +131,8 @@ struct Values {
     hide_client: bool,
     allowed_users: Vec<String>,
     auth_state_file: String,
+    stats_addr: String,
+    stats_file: String,
     log_level: String,
     log_format: String,
     log_time: bool,
@@ -145,6 +154,8 @@ struct Raw {
     hide_client: Option<bool>,
     allowed_users: Option<Vec<String>>,
     auth_state_file: Option<String>,
+    stats_addr: Option<String>,
+    stats_file: Option<String>,
     debug: Option<bool>,
     log_level: Option<String>,
     log_format: Option<String>,
@@ -168,6 +179,8 @@ impl Default for Values {
             hide_client: false,
             allowed_users: Vec::new(),
             auth_state_file: String::new(),
+            stats_addr: DEFAULT_STATS_ADDR.into(),
+            stats_file: String::new(),
             log_level: logging::DEFAULT_LEVEL.into(),
             log_format: logging::DEFAULT_FORMAT.into(),
             log_time: true,
@@ -266,6 +279,12 @@ impl Values {
         if let Some(v) = raw.auth_state_file {
             self.auth_state_file = v.trim().to_owned();
         }
+        if let Some(v) = raw.stats_addr {
+            self.stats_addr = v.trim().to_owned();
+        }
+        if let Some(v) = raw.stats_file {
+            self.stats_file = v.trim().to_owned();
+        }
         if let Some(debug) = raw.debug {
             self.log_level = if debug {
                 "debug".into()
@@ -316,6 +335,9 @@ impl Values {
         raw.hide_client = boolean("PROXEMBY_HIDE_CLIENT");
         raw.allowed_users = non_empty("PROXEMBY_ALLOWED_USERS").map(|v| split_csv(&v));
         raw.auth_state_file = non_empty("PROXEMBY_AUTH_STATE_FILE");
+        // An empty PROXEMBY_STATS_ADDR disables the admin listener.
+        raw.stats_addr = env.get("PROXEMBY_STATS_ADDR").cloned();
+        raw.stats_file = non_empty("PROXEMBY_STATS_FILE");
         raw.debug = boolean("PROXEMBY_DEBUG");
         raw.log_level = non_empty("PROXEMBY_LOG_LEVEL");
         raw.log_format = non_empty("PROXEMBY_LOG_FORMAT");
@@ -361,6 +383,8 @@ impl Values {
             hide_client: self.hide_client,
             allowed_users: clean_strings(&self.allowed_users),
             auth_state_file: self.auth_state_file.trim().to_owned(),
+            stats_addr: self.stats_addr,
+            stats_file: self.stats_file,
             logging,
         })
     }
@@ -460,7 +484,15 @@ struct TomlConfig {
     #[serde(default)]
     auth: TomlAuth,
     #[serde(default)]
+    stats: TomlStats,
+    #[serde(default)]
     logging: TomlLogging,
+}
+
+#[derive(Deserialize, Default)]
+struct TomlStats {
+    addr: Option<String>,
+    file: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -542,6 +574,8 @@ fn raw_from_toml_file(path: &str) -> Result<Raw, std::io::Error> {
         hide_client: cfg.proxy.hide_client,
         allowed_users: cfg.auth.allowed_users,
         auth_state_file: cfg.auth.state_file,
+        stats_addr: cfg.stats.addr,
+        stats_file: cfg.stats.file,
         debug: cfg.logging.debug,
         log_level: cfg.logging.level,
         log_format: cfg.logging.format,
@@ -589,6 +623,8 @@ const FLAGS: &[(&[&str], &str, FlagKind)] = &[
         "response-header-timeout",
         FlagKind::Int,
     ),
+    (&["stats-addr"], "stats-addr", FlagKind::Str),
+    (&["stats-file"], "stats-file", FlagKind::Str),
     (&["help"], "help", FlagKind::Bool),
     (&["version"], "version", FlagKind::Bool),
 ];
@@ -708,6 +744,8 @@ fn parse_flags(args: &[String]) -> Result<Cli, Error> {
             "log-format" => raw.log_format = Some(value),
             "log-time" => raw.log_time = Some(as_bool(&value)),
             "response-header-timeout" => raw.response_header_timeout = value.trim().parse().ok(),
+            "stats-addr" => raw.stats_addr = Some(value),
+            "stats-file" => raw.stats_file = Some(value),
             "help" => cli.help = as_bool(&value),
             "version" => cli.version = as_bool(&value),
             _ => {}
@@ -787,6 +825,7 @@ where
 
 pub const USAGE: &str = "Usage:
   proxemby [options]
+  proxemby stats [options]           Show traffic statistics of the running proxy
 
 Options:
   -c, --config PATH                  Config file path (default /etc/proxemby/proxemby.toml)
@@ -805,6 +844,8 @@ Options:
       --hide-client                  Hide client identity headers from upstream
       --allowed-users USERS          Comma-separated upstream Emby usernames allowed to log in
       --auth-state-file PATH         File used to persist login sessions
+      --stats-addr ADDR              Admin listener for traffic statistics; empty disables (default 127.0.0.1:9180)
+      --stats-file PATH              File that keeps per-day traffic totals
       --log-level LEVEL              Log level: debug, info, warn, or error
       --log-format FORMAT            Log format: text or json
       --log-time                     Include time in log output
@@ -990,6 +1031,10 @@ trust_proxy_headers = true
 allowed_users = ["ken", " "]
 state_file = "/var/lib/proxemby/auth.json"
 
+[stats]
+addr = "127.0.0.1:9999"
+file = "/var/lib/proxemby/stats.json"
+
 [logging]
 debug = true
 level = "error"
@@ -1019,6 +1064,8 @@ time = false
         assert!(cfg.trust_proxy_headers);
         assert_eq!(cfg.allowed_users, vec!["ken"]);
         assert_eq!(cfg.auth_state_file, "/var/lib/proxemby/auth.json");
+        assert_eq!(cfg.stats_addr, "127.0.0.1:9999");
+        assert_eq!(cfg.stats_file, "/var/lib/proxemby/stats.json");
         assert!(cfg.hide_client);
         assert_eq!(cfg.logging.level, Level::Error);
         assert_eq!(cfg.logging.format, Format::Json);
@@ -1197,6 +1244,38 @@ level = "warn"
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn stats_options() {
+        let route = ("PROXEMBY_ROUTE", "https://us.emby.com,http://proxemby");
+        let cfg = from_env_map([route]).unwrap();
+        assert_eq!(cfg.stats_addr, "127.0.0.1:9180");
+        assert_eq!(cfg.stats_file, "");
+
+        let cfg = from_env_map([
+            route,
+            ("PROXEMBY_STATS_ADDR", ""),
+            ("PROXEMBY_STATS_FILE", "/tmp/s.json"),
+        ])
+        .unwrap();
+        assert_eq!(cfg.stats_addr, "");
+        assert_eq!(cfg.stats_file, "/tmp/s.json");
+
+        let cfg = sources(
+            &[
+                "--route",
+                route.1,
+                "--stats-addr",
+                ":9181",
+                "--stats-file",
+                "s.json",
+            ],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(cfg.stats_addr, ":9181");
+        assert_eq!(cfg.stats_file, "s.json");
     }
 
     #[test]

@@ -2,7 +2,6 @@
 //! sign resource URLs. The state file format matches the Go implementation.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::SystemTime;
@@ -160,28 +159,7 @@ impl Store {
             sessions: Some(sessions.clone()),
         })
         .map_err(|e| e.to_string())?;
-        let dir = path
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("auth");
-        let mut suffix = [0u8; 8];
-        let _ = getrandom::fill(&mut suffix);
-        let tmp = dir.join(format!("{file_name}.tmp{}", u64::from_le_bytes(suffix)));
-        let result = (|| {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-            let mut file = options.open(&tmp)?;
-            file.write_all(&data)?;
-            file.sync_all()?;
-            std::fs::rename(&tmp, path)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        result.map_err(|e| format!("save auth state: {e}"))
+        crate::util::write_private_file(path, &data).map_err(|e| format!("save auth state: {e}"))
     }
 }
 

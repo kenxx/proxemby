@@ -69,6 +69,15 @@ allowed_users = []
 # Empty keeps them in memory, so clients must log in again after a restart.
 # state_file = "/var/lib/proxemby/auth.json"
 
+[stats]
+# Admin listener for `proxemby stats`, /stats and /metrics. Keep it on
+# localhost. Empty disables it.
+addr = "127.0.0.1:9180"
+
+# File that keeps per-day traffic totals across restarts. Empty keeps them in
+# memory only.
+# file = "/var/lib/proxemby/stats.json"
+
 [logging]
 # Log level. Values: "debug", "info", "warn", "error".
 level = "info"

@@ -132,12 +132,17 @@ pub fn test_logger(level: Level) -> (Logger, LogBuffer) {
 
 /// Starts proxemby on a random local port and returns its address.
 pub async fn spawn_proxy(cfg: &Config, logger: Logger) -> SocketAddr {
+    spawn_server(cfg, logger).await.0
+}
+
+/// Like [`spawn_proxy`], also returning the server for inspecting its stats.
+pub async fn spawn_server(cfg: &Config, logger: Logger) -> (SocketAddr, Arc<Server>) {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let proxy = Server::new(cfg, logger, None);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(server::serve_http(listener, proxy, no_shutdown()));
-    addr
+    tokio::spawn(server::serve_http(listener, proxy.clone(), no_shutdown()));
+    (addr, proxy)
 }
 
 pub struct TestResponse {

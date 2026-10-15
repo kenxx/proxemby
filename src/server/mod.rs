@@ -1,6 +1,7 @@
 //! The HTTP side of proxemby: host routing, connection serving and the shared
 //! upstream clients.
 
+mod admin;
 mod auth_gate;
 mod body;
 mod client_filter;
@@ -26,6 +27,7 @@ use hyper_util::server::conn::auto;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 
+pub use admin::serve_admin;
 pub use body::ProxyBody;
 pub use shutdown::{Shutdown, ShutdownSignal};
 pub use tls::{client_config, serve_tls, server_config};
@@ -33,6 +35,7 @@ pub use tls::{client_config, serve_tls, server_config};
 use crate::auth::Store;
 use crate::config::Config;
 use crate::logging::Logger;
+use crate::stats::Stats;
 use crate::util::{hostname, sanitize_request_uri, unmap};
 use route::RouteProxy;
 
@@ -92,13 +95,34 @@ pub struct ConnInfo {
 
 pub struct Server {
     routes: HashMap<String, Arc<RouteProxy>>,
+    stats: Arc<Stats>,
     logger: Logger,
+}
+
+/// The statistics name of each route: its lower-cased public hostname.
+pub fn route_names(cfg: &Config) -> Vec<String> {
+    cfg.routes
+        .iter()
+        .map(|route| route.public_url.hostname().to_ascii_lowercase())
+        .collect()
 }
 
 impl Server {
     /// Builds the server. `store` keeps sessions for the allowed-users check
     /// and is ignored when `cfg.allowed_users` is empty.
     pub fn new(cfg: &Config, logger: Logger, store: Option<Arc<Store>>) -> Arc<Server> {
+        let stats = Arc::new(Stats::memory(&route_names(cfg)));
+        Server::with_stats(cfg, logger, store, stats)
+    }
+
+    /// Like [`Server::new`], recording traffic in `stats`, which must have
+    /// been created with [`route_names`] of the same config.
+    pub fn with_stats(
+        cfg: &Config,
+        logger: Logger,
+        store: Option<Arc<Store>>,
+        stats: Arc<Stats>,
+    ) -> Arc<Server> {
         let store = if cfg.allowed_users.is_empty() {
             None
         } else {
@@ -115,20 +139,30 @@ impl Server {
                     ("public_url", route.public_url.to_string().into()),
                     ("upstream_url", route.upstream_url.to_string().into()),
                 ]);
+                let name = route.public_url.hostname().to_ascii_lowercase();
+                let route_stats = stats
+                    .route(&name)
+                    .expect("stats are created from the same routes");
                 let proxy = RouteProxy::new(
                     cfg.clone(),
                     route.clone(),
                     clients.clone(),
                     store.clone(),
+                    route_stats,
                     route_logger,
                 );
-                (
-                    route.public_url.hostname().to_ascii_lowercase(),
-                    Arc::new(proxy),
-                )
+                (name, Arc::new(proxy))
             })
             .collect();
-        Arc::new(Server { routes, logger })
+        Arc::new(Server {
+            routes,
+            stats,
+            logger,
+        })
+    }
+
+    pub fn stats(&self) -> &Arc<Stats> {
+        &self.stats
     }
 
     pub async fn handle(&self, req: Request<Incoming>, conn: ConnInfo) -> Response<ProxyBody> {

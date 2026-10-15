@@ -5,11 +5,13 @@ use std::time::{Duration, Instant};
 use bytes::{Bytes, BytesMut};
 use http::header::{self, HeaderValue};
 use http::{Method, Request, Response, StatusCode, Uri, Version};
+use http_body::Body as _;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 
 use super::auth_gate::{emby_path_segments, is_login_path, is_public_emby_path, match_segments};
+use super::body::Meter;
 use super::client_filter::{client_addr, header_str, is_allowed};
 use super::{
     Clients, ConnInfo, HttpClient, ProxyBody, RESOURCE_PREFIX, empty_response, error_chain,
@@ -20,6 +22,7 @@ use crate::config::{Config, Route};
 use crate::hosts::Registry;
 use crate::logging::{Level, Logger};
 use crate::rewrite::{RewriteEvent, Rewriter};
+use crate::stats::{Kind, RouteStats, classify};
 use crate::util::{sanitize_request_uri, sanitize_url_string};
 
 const UPSTREAM_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -46,6 +49,7 @@ pub(crate) struct RouteProxy {
     /// `None` when no allowed users are configured.
     auth: Option<Arc<Store>>,
     allowed_users: Vec<String>,
+    stats: &'static RouteStats,
     logger: Logger,
 }
 
@@ -60,6 +64,7 @@ impl RouteProxy {
         route: Route,
         clients: Arc<Clients>,
         auth: Option<Arc<Store>>,
+        stats: &'static RouteStats,
         logger: Logger,
     ) -> RouteProxy {
         let registry = Arc::new(Registry::new(&cfg.allowed_hosts));
@@ -82,6 +87,7 @@ impl RouteProxy {
             rewriter,
             clients,
             auth,
+            stats,
             logger,
         }
     }
@@ -91,8 +97,11 @@ impl RouteProxy {
         req: Request<Incoming>,
         conn: ConnInfo,
     ) -> Response<ProxyBody> {
+        let kind = classify(req.uri().path());
+        self.stats.kind(kind).add_request();
         if !self.logger.enabled(Level::Debug) {
-            return self.handle_checked(req, conn).await;
+            let resp = self.clone().handle_checked(req, conn).await;
+            return resp.map(|body| self.meter_response(body, kind));
         }
 
         let start = Instant::now();
@@ -107,6 +116,7 @@ impl RouteProxy {
             .to_owned();
 
         let resp = self.clone().handle_checked(req, conn).await;
+        let resp = resp.map(|body| self.meter_response(body, kind));
         let status = resp.status().as_u16();
         let logger = self.logger.clone();
         resp.map(move |body| {
@@ -123,6 +133,28 @@ impl RouteProxy {
                 );
             })
         })
+    }
+
+    /// Adds a response body to the traffic statistics.
+    fn meter_response(&self, body: ProxyBody, kind: Kind) -> ProxyBody {
+        match body {
+            ProxyBody::Incoming(body) => {
+                ProxyBody::Metered(body, Meter::response(self.stats.kind(kind)))
+            }
+            ProxyBody::Full(Some(data)) => {
+                self.stats.kind(kind).add_bytes_out(data.len() as u64);
+                ProxyBody::Full(Some(data))
+            }
+            other => other,
+        }
+    }
+
+    /// Wraps a client request body for forwarding, counting its bytes.
+    fn request_body(&self, body: Incoming, path: &str) -> ProxyBody {
+        if body.is_end_stream() {
+            return ProxyBody::Incoming(body);
+        }
+        ProxyBody::Metered(body, Meter::request(self.stats.kind(classify(path))))
     }
 
     fn target_for_log(&self, path: &str) -> String {
@@ -306,7 +338,7 @@ impl RouteProxy {
             headers.remove(header::ACCEPT_ENCODING);
         }
 
-        let mut out = Request::new(ProxyBody::Incoming(body));
+        let mut out = Request::new(self.request_body(body, parts.uri.path()));
         *out.method_mut() = parts.method;
         *out.uri_mut() = uri;
         *out.version_mut() = Version::HTTP_11;
@@ -364,6 +396,7 @@ impl RouteProxy {
         }
         let upstream_upgrade = hyper::upgrade::on(&mut resp);
         let logger = self.logger.clone();
+        let counters = self.stats.kind(Kind::Api);
         tokio::spawn(async move {
             let (client, upstream) = match tokio::try_join!(client_upgrade, upstream_upgrade) {
                 Ok(pair) => pair,
@@ -377,7 +410,12 @@ impl RouteProxy {
             };
             let mut client = TokioIo::new(client);
             let mut upstream = TokioIo::new(upstream);
-            let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            if let Ok((sent, received)) =
+                tokio::io::copy_bidirectional(&mut client, &mut upstream).await
+            {
+                counters.add_bytes_in(sent);
+                counters.add_bytes_out(received);
+            }
         });
         let (parts, _) = resp.into_parts();
         Response::from_parts(parts, ProxyBody::Empty)
@@ -618,7 +656,7 @@ impl RouteProxy {
         let (parts, body) = req.into_parts();
         let mut headers = parts.headers;
         prepare_outbound_headers(&mut headers, None);
-        let mut out = Request::new(ProxyBody::Incoming(body));
+        let mut out = Request::new(self.request_body(body, parts.uri.path()));
         *out.method_mut() = parts.method;
         *out.uri_mut() = uri;
         *out.version_mut() = Version::HTTP_11;

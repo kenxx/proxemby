@@ -10,7 +10,8 @@ use rustls_acme::caches::DirCache;
 use proxemby::auth::Store;
 use proxemby::config::{self, Config};
 use proxemby::logging::Logger;
-use proxemby::server::{self, Server, Shutdown};
+use proxemby::server::{self, Server, Shutdown, ShutdownSignal};
+use proxemby::stats::{self, Stats};
 use proxemby::{error, info, warn};
 
 #[cfg(target_env = "musl")]
@@ -22,8 +23,15 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long open connections get to finish after SIGTERM or SIGINT.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
+/// How often traffic totals are written to the stats file.
+const STATS_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let stats_command = args.first().is_some_and(|a| a == "stats");
+    if stats_command {
+        args.remove(0);
+    }
     let cfg = match config::from_sources(&args, std::env::vars()) {
         Ok(cfg) => cfg,
         Err(config::Error::Help) => {
@@ -39,6 +47,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if stats_command {
+        return show_stats(&cfg);
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
     let logger = Logger::new(cfg.logging, Box::new(std::io::stderr()));
 
@@ -56,6 +67,28 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             error!(logger, "proxemby server failed", "error" => e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `proxemby stats`: prints the running proxy's traffic statistics.
+fn show_stats(cfg: &Config) -> ExitCode {
+    if !cfg.stats_enable {
+        eprintln!("stats are disabled: set [stats] enable = true in the config");
+        return ExitCode::FAILURE;
+    }
+    if cfg.stats_addr.is_empty() {
+        eprintln!("the stats listener is disabled: set [stats] addr in the config");
+        return ExitCode::FAILURE;
+    }
+    match stats::fetch_report(&stats::admin_connect_addr(&cfg.stats_addr)) {
+        Ok(report) => {
+            print!("{}", stats::render_table(&report));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
             ExitCode::FAILURE
         }
     }
@@ -83,7 +116,12 @@ async fn run(cfg: Config, logger: Logger) -> Result<(), String> {
         );
     }
 
-    let proxy = Server::new(&cfg, logger.clone(), store);
+    let mut stats = None;
+    if cfg.stats_enable {
+        let path = (!cfg.stats_file.is_empty()).then(|| Path::new(&cfg.stats_file));
+        stats = Some(Arc::new(Stats::open(&server::route_names(&cfg), path)?));
+    }
+    let proxy = Server::with_stats(&cfg, logger.clone(), store, stats.clone());
     let http_listener = server::bind(&cfg.http_addr)
         .await
         .map_err(|e| format!("listen {}: {e}", cfg.http_addr))?;
@@ -95,6 +133,20 @@ async fn run(cfg: Config, logger: Logger) -> Result<(), String> {
         proxy.clone(),
         shutdown.signal(),
     ));
+    if let Some(stats) = &stats {
+        if !cfg.stats_addr.is_empty() {
+            let admin = server::bind(&cfg.stats_addr)
+                .await
+                .map_err(|e| format!("listen {}: {e}", cfg.stats_addr))?;
+            info!(logger, "proxemby stats listening", "addr" => cfg.stats_addr.as_str(), "file" => cfg.stats_file.as_str());
+            servers.spawn(server::serve_admin(admin, stats.clone(), shutdown.signal()));
+        }
+        tokio::spawn(flush_stats(
+            stats.clone(),
+            shutdown.signal(),
+            logger.clone(),
+        ));
+    }
     if cfg.tls_enable {
         serve_tls(&cfg, proxy, &shutdown, &mut servers, &logger).await?;
     }
@@ -116,7 +168,29 @@ async fn run(cfg: Config, logger: Logger) -> Result<(), String> {
             "proxemby closed connections still open after the grace period"
         );
     }
+    if let Some(Err(e)) = stats.map(|stats| stats.flush()) {
+        warn!(logger, "proxemby stats flush failed", "error" => e);
+    }
     result
+}
+
+/// Writes traffic totals to the stats file once a minute until shutdown.
+async fn flush_stats(stats: Arc<Stats>, signal: ShutdownSignal, logger: Logger) {
+    let mut interval = tokio::time::interval(STATS_FLUSH_INTERVAL);
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = signal.triggered() => return,
+        }
+        // Writing the file is blocking I/O; keep it off the proxy's threads.
+        let stats = stats.clone();
+        match tokio::task::spawn_blocking(move || stats.flush()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(logger, "proxemby stats flush failed", "error" => e),
+            Err(e) => warn!(logger, "proxemby stats flush failed", "error" => e.to_string()),
+        }
+    }
 }
 
 async fn serve_tls(

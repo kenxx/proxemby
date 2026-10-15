@@ -1,7 +1,9 @@
 //! URL, query and IP helpers that mirror the Go `net/url` and `net/netip`
 //! behavior proxemby relied on.
 
+use std::io::Write;
 use std::net::IpAddr;
+use std::path::Path;
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
@@ -355,6 +357,32 @@ pub fn parse_client_addr(raw: &str) -> Option<IpAddr> {
 
 pub fn first_forwarded_for(raw: &str) -> &str {
     raw.split(',').next().unwrap_or("").trim()
+}
+
+/// Atomically replaces `path` with `data`, readable only by the owner.
+pub fn write_private_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("state");
+    let mut suffix = [0u8; 8];
+    let _ = getrandom::fill(&mut suffix);
+    let tmp = dir.join(format!("{file_name}.tmp{}", u64::from_le_bytes(suffix)));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&tmp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]

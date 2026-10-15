@@ -135,6 +135,19 @@ allowed_users = ["ken"]
 # File used to persist accepted logins and the resource URL signing secret.
 state_file = "/var/lib/proxemby/auth.json"
 
+[stats]
+# Optional. Default: false. Count traffic per route and kind. When false,
+# nothing is counted and the options below are ignored.
+enable = false
+
+# Optional. Default: "127.0.0.1:9180". Admin listener for `proxemby stats`,
+# /stats and /metrics. Keep it on localhost. Empty disables it.
+addr = "127.0.0.1:9180"
+
+# Optional. Default: empty (totals are kept in memory only).
+# File that keeps per-day traffic totals across restarts.
+file = "/var/lib/proxemby/stats.json"
+
 [logging]
 # Optional. Default: "info". Values: "debug", "info", "warn", "error".
 level = "info"
@@ -169,6 +182,9 @@ Command-line flags:
 | `--hide-client` | Do not send `X-Forwarded-*` client/proxy headers to the upstream Emby server. |
 | `--allowed-users` | Comma-separated upstream Emby usernames allowed to use the proxy. Empty means unrestricted. |
 | `--auth-state-file` | File used to persist accepted logins and the resource URL signing secret. |
+| `--stats-enable` | Count traffic per route and kind. |
+| `--stats-addr` | Admin listener for traffic statistics; empty disables. |
+| `--stats-file` | File that keeps per-day traffic totals. |
 | `--log-level` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `--log-format` | Log format: `text` or `json`. |
 | `--log-time` | Include time in log output. Use `--log-time=false` to disable. |
@@ -194,6 +210,9 @@ Environment variables:
 | `PROXEMBY_HIDE_CLIENT` | no | `false` | Do not send `X-Forwarded-*` client/proxy headers to the upstream Emby server. |
 | `PROXEMBY_ALLOWED_USERS` | no | | Comma-separated upstream Emby usernames allowed to use the proxy. Empty means unrestricted. |
 | `PROXEMBY_AUTH_STATE_FILE` | no | | File used to persist accepted logins and the resource URL signing secret. |
+| `PROXEMBY_STATS_ENABLE` | no | `false` | Count traffic per route and kind. |
+| `PROXEMBY_STATS_ADDR` | no | `127.0.0.1:9180` | Admin listener for traffic statistics; set it to an empty value to disable. |
+| `PROXEMBY_STATS_FILE` | no | | File that keeps per-day traffic totals. |
 | `PROXEMBY_LOG_LEVEL` | no | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `PROXEMBY_LOG_FORMAT` | no | `text` | Log format: `text` or `json`. |
 | `PROXEMBY_LOG_TIME` | no | `true` | Include time in log output. |
@@ -218,6 +237,47 @@ Environment variables:
 - If an upstream does not send response headers within `response_header_timeout`, proxemby answers `504`. Once headers arrive, the body streams without a deadline.
 - On `SIGTERM` or `SIGINT`, proxemby stops accepting connections and gives open requests up to 10 seconds to finish before exiting.
 - Upgrading the Debian package reloads systemd and restarts the service if it is running. A fresh install is not started automatically.
+
+## Traffic statistics
+
+With `[stats] enable = true`, proxemby counts requests and bytes per route and
+kind: `api`, `media` (proxied resources, video and audio streams, downloads)
+and `image` (artwork). Counting is a per-thread atomic add per chunk, so it has
+no measurable cost. Statistics are off by default; when off, the proxy path
+skips counting entirely.
+
+```toml
+[stats]
+enable = true
+file = "/var/lib/proxemby/stats.json"
+```
+
+Show today's, this month's and since-start traffic sent to clients:
+
+```sh
+$ proxemby stats
+ROUTE / KIND                              TODAY   THIS MONTH  SINCE START ACTIVE
+v1.example.com                        12.43 GiB   183.20 GiB    20.10 GiB      1
+  api                                210.50 MiB     3.10 GiB   350.00 MiB      0
+  media                               12.20 GiB   180.00 GiB    19.70 GiB      1
+  image                               20.10 MiB   100.30 MiB    50.20 MiB      0
+```
+
+`proxemby stats` reads the same config as the server (pass `-c` if it is not
+at the default path) and asks the running server's admin listener.
+
+The admin listener also serves:
+
+- `GET /stats`: the same report as JSON, including request counts and bytes
+  received from clients.
+- `GET /metrics`: Prometheus metrics `proxemby_requests_total`,
+  `proxemby_response_bytes_total`, `proxemby_request_bytes_total` and
+  `proxemby_active_streams`, labelled by `route` and `kind`.
+
+Days follow the server's local time zone. Set `[stats] file` so daily and
+monthly totals survive restarts; they are written once a minute and on
+shutdown, and the last 400 days are kept. WebSocket traffic is counted when the
+connection closes.
 
 ## Development
 

@@ -8,4 +8,5 @@ pub mod config;
 pub mod hosts;
 pub mod rewrite;
 pub mod server;
+pub mod stats;
 pub mod util;

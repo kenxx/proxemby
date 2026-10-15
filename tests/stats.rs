@@ -12,13 +12,19 @@ use tokio::net::TcpListener;
 async fn report_eventually(server: &server::Server, done: impl Fn(&Report) -> bool) -> Report {
     // Response bodies are counted as they stream, so wait for the last bytes.
     for _ in 0..100 {
-        let report = server.stats().report();
+        let report = server.stats().unwrap().report();
         if done(&report) {
             return report;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    server.stats().report()
+    server.stats().unwrap().report()
+}
+
+fn enabled(upstream: &str) -> proxemby::config::Config {
+    let mut cfg = test_config(upstream, "http://proxemby");
+    cfg.stats_enable = true;
+    cfg
 }
 
 #[tokio::test]
@@ -40,11 +46,7 @@ async fn counts_traffic_by_kind() {
         }))
         .await
     };
-    let (proxy, server) = spawn_server(
-        &test_config(&upstream, "http://proxemby"),
-        Logger::discard(),
-    )
-    .await;
+    let (proxy, server) = spawn_server(&enabled(&upstream), Logger::discard()).await;
 
     get(proxy, "proxemby", "/emby/Items/1/PlaybackInfo", &[]).await;
     let resp = get(
@@ -100,18 +102,14 @@ async fn counts_traffic_by_kind() {
 #[tokio::test]
 async fn admin_listener_serves_stats_and_metrics() {
     let upstream = spawn_upstream(handler(|_| async { text("ok") })).await;
-    let (proxy, server) = spawn_server(
-        &test_config(&upstream, "http://proxemby"),
-        Logger::discard(),
-    )
-    .await;
+    let (proxy, server) = spawn_server(&enabled(&upstream), Logger::discard()).await;
     get(proxy, "proxemby", "/emby/System/Info", &[]).await;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let admin = listener.local_addr().unwrap();
     tokio::spawn(server::serve_admin(
         listener,
-        server.stats().clone(),
+        server.stats().unwrap().clone(),
         no_shutdown(),
     ));
 
@@ -153,4 +151,19 @@ async fn admin_listener_serves_stats_and_metrics() {
         .unwrap();
     assert_eq!(fetched.routes[0].kinds["api"].since_start.requests, 1);
     assert!(stats::render_table(&fetched).contains("proxemby"));
+}
+
+#[tokio::test]
+async fn stats_are_disabled_by_default() {
+    let upstream = spawn_upstream(handler(|_| async { text("ok") })).await;
+    let (proxy, server) = spawn_server(
+        &test_config(&upstream, "http://proxemby"),
+        Logger::discard(),
+    )
+    .await;
+    assert!(server.stats().is_none());
+    assert_eq!(
+        get(proxy, "proxemby", "/emby/System/Info", &[]).await.body,
+        "ok"
+    );
 }

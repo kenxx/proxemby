@@ -49,7 +49,8 @@ pub(crate) struct RouteProxy {
     /// `None` when no allowed users are configured.
     auth: Option<Arc<Store>>,
     allowed_users: Vec<String>,
-    stats: &'static RouteStats,
+    /// `None` when traffic statistics are disabled.
+    stats: Option<&'static RouteStats>,
     logger: Logger,
 }
 
@@ -64,7 +65,7 @@ impl RouteProxy {
         route: Route,
         clients: Arc<Clients>,
         auth: Option<Arc<Store>>,
-        stats: &'static RouteStats,
+        stats: Option<&'static RouteStats>,
         logger: Logger,
     ) -> RouteProxy {
         let registry = Arc::new(Registry::new(&cfg.allowed_hosts));
@@ -97,11 +98,17 @@ impl RouteProxy {
         req: Request<Incoming>,
         conn: ConnInfo,
     ) -> Response<ProxyBody> {
-        let kind = classify(req.uri().path());
-        self.stats.kind(kind).add_request();
+        let kind = self.stats.map(|stats| {
+            let kind = classify(req.uri().path());
+            stats.kind(kind).add_request();
+            kind
+        });
         if !self.logger.enabled(Level::Debug) {
             let resp = self.clone().handle_checked(req, conn).await;
-            return resp.map(|body| self.meter_response(body, kind));
+            return match kind {
+                Some(kind) => resp.map(|body| self.meter_response(body, kind)),
+                None => resp,
+            };
         }
 
         let start = Instant::now();
@@ -116,7 +123,10 @@ impl RouteProxy {
             .to_owned();
 
         let resp = self.clone().handle_checked(req, conn).await;
-        let resp = resp.map(|body| self.meter_response(body, kind));
+        let resp = match kind {
+            Some(kind) => resp.map(|body| self.meter_response(body, kind)),
+            None => resp,
+        };
         let status = resp.status().as_u16();
         let logger = self.logger.clone();
         resp.map(move |body| {
@@ -137,12 +147,15 @@ impl RouteProxy {
 
     /// Adds a response body to the traffic statistics.
     fn meter_response(&self, body: ProxyBody, kind: Kind) -> ProxyBody {
+        let Some(stats) = self.stats else {
+            return body;
+        };
         match body {
             ProxyBody::Incoming(body) => {
-                ProxyBody::Metered(body, Meter::response(self.stats.kind(kind)))
+                ProxyBody::Metered(body, Meter::response(stats.kind(kind)))
             }
             ProxyBody::Full(Some(data)) => {
-                self.stats.kind(kind).add_bytes_out(data.len() as u64);
+                stats.kind(kind).add_bytes_out(data.len() as u64);
                 ProxyBody::Full(Some(data))
             }
             other => other,
@@ -151,10 +164,12 @@ impl RouteProxy {
 
     /// Wraps a client request body for forwarding, counting its bytes.
     fn request_body(&self, body: Incoming, path: &str) -> ProxyBody {
-        if body.is_end_stream() {
-            return ProxyBody::Incoming(body);
+        match self.stats {
+            Some(stats) if !body.is_end_stream() => {
+                ProxyBody::Metered(body, Meter::request(stats.kind(classify(path))))
+            }
+            _ => ProxyBody::Incoming(body),
         }
-        ProxyBody::Metered(body, Meter::request(self.stats.kind(classify(path))))
     }
 
     fn target_for_log(&self, path: &str) -> String {
@@ -396,7 +411,7 @@ impl RouteProxy {
         }
         let upstream_upgrade = hyper::upgrade::on(&mut resp);
         let logger = self.logger.clone();
-        let counters = self.stats.kind(Kind::Api);
+        let counters = self.stats.map(|stats| stats.kind(Kind::Api));
         tokio::spawn(async move {
             let (client, upstream) = match tokio::try_join!(client_upgrade, upstream_upgrade) {
                 Ok(pair) => pair,
@@ -410,9 +425,8 @@ impl RouteProxy {
             };
             let mut client = TokioIo::new(client);
             let mut upstream = TokioIo::new(upstream);
-            if let Ok((sent, received)) =
-                tokio::io::copy_bidirectional(&mut client, &mut upstream).await
-            {
+            let copied = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            if let (Ok((sent, received)), Some(counters)) = (copied, counters) {
                 counters.add_bytes_in(sent);
                 counters.add_bytes_out(received);
             }

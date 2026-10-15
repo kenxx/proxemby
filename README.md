@@ -136,6 +136,10 @@ allowed_users = ["ken"]
 state_file = "/var/lib/proxemby/auth.json"
 
 [stats]
+# Optional. Default: false. Count traffic per route and kind. When false,
+# nothing is counted and the options below are ignored.
+enable = false
+
 # Optional. Default: "127.0.0.1:9180". Admin listener for `proxemby stats`,
 # /stats and /metrics. Keep it on localhost. Empty disables it.
 addr = "127.0.0.1:9180"
@@ -178,6 +182,7 @@ Command-line flags:
 | `--hide-client` | Do not send `X-Forwarded-*` client/proxy headers to the upstream Emby server. |
 | `--allowed-users` | Comma-separated upstream Emby usernames allowed to use the proxy. Empty means unrestricted. |
 | `--auth-state-file` | File used to persist accepted logins and the resource URL signing secret. |
+| `--stats-enable` | Count traffic per route and kind. |
 | `--stats-addr` | Admin listener for traffic statistics; empty disables. |
 | `--stats-file` | File that keeps per-day traffic totals. |
 | `--log-level` | Log level: `debug`, `info`, `warn`, or `error`. |
@@ -205,6 +210,7 @@ Environment variables:
 | `PROXEMBY_HIDE_CLIENT` | no | `false` | Do not send `X-Forwarded-*` client/proxy headers to the upstream Emby server. |
 | `PROXEMBY_ALLOWED_USERS` | no | | Comma-separated upstream Emby usernames allowed to use the proxy. Empty means unrestricted. |
 | `PROXEMBY_AUTH_STATE_FILE` | no | | File used to persist accepted logins and the resource URL signing secret. |
+| `PROXEMBY_STATS_ENABLE` | no | `false` | Count traffic per route and kind. |
 | `PROXEMBY_STATS_ADDR` | no | `127.0.0.1:9180` | Admin listener for traffic statistics; set it to an empty value to disable. |
 | `PROXEMBY_STATS_FILE` | no | | File that keeps per-day traffic totals. |
 | `PROXEMBY_LOG_LEVEL` | no | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
@@ -234,9 +240,17 @@ Environment variables:
 
 ## Traffic statistics
 
-proxemby counts requests and bytes per route and kind: `api`, `media` (proxied
-resources, video and audio streams, downloads) and `image` (artwork). Counting
-is a per-thread atomic add per chunk, so it has no measurable cost.
+With `[stats] enable = true`, proxemby counts requests and bytes per route and
+kind: `api`, `media` (proxied resources, video and audio streams, downloads)
+and `image` (artwork). Counting is a per-thread atomic add per chunk, so it has
+no measurable cost. Statistics are off by default; when off, the proxy path
+skips counting entirely.
+
+```toml
+[stats]
+enable = true
+file = "/var/lib/proxemby/stats.json"
+```
 
 Show today's, this month's and since-start traffic sent to clients:
 

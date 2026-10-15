@@ -42,6 +42,8 @@ pub struct Config {
     pub hide_client: bool,
     pub allowed_users: Vec<String>,
     pub auth_state_file: String,
+    /// Count traffic per route and kind.
+    pub stats_enable: bool,
     /// Admin listener for traffic statistics; empty disables it.
     pub stats_addr: String,
     /// File that keeps per-day traffic totals; empty keeps them in memory.
@@ -70,6 +72,7 @@ impl Config {
             hide_client: false,
             allowed_users: Vec::new(),
             auth_state_file: String::new(),
+            stats_enable: false,
             stats_addr: DEFAULT_STATS_ADDR.into(),
             stats_file: String::new(),
             logging: logging::Config::default(),
@@ -131,6 +134,7 @@ struct Values {
     hide_client: bool,
     allowed_users: Vec<String>,
     auth_state_file: String,
+    stats_enable: bool,
     stats_addr: String,
     stats_file: String,
     log_level: String,
@@ -154,6 +158,7 @@ struct Raw {
     hide_client: Option<bool>,
     allowed_users: Option<Vec<String>>,
     auth_state_file: Option<String>,
+    stats_enable: Option<bool>,
     stats_addr: Option<String>,
     stats_file: Option<String>,
     debug: Option<bool>,
@@ -179,6 +184,7 @@ impl Default for Values {
             hide_client: false,
             allowed_users: Vec::new(),
             auth_state_file: String::new(),
+            stats_enable: false,
             stats_addr: DEFAULT_STATS_ADDR.into(),
             stats_file: String::new(),
             log_level: logging::DEFAULT_LEVEL.into(),
@@ -279,6 +285,9 @@ impl Values {
         if let Some(v) = raw.auth_state_file {
             self.auth_state_file = v.trim().to_owned();
         }
+        if let Some(v) = raw.stats_enable {
+            self.stats_enable = v;
+        }
         if let Some(v) = raw.stats_addr {
             self.stats_addr = v.trim().to_owned();
         }
@@ -335,6 +344,7 @@ impl Values {
         raw.hide_client = boolean("PROXEMBY_HIDE_CLIENT");
         raw.allowed_users = non_empty("PROXEMBY_ALLOWED_USERS").map(|v| split_csv(&v));
         raw.auth_state_file = non_empty("PROXEMBY_AUTH_STATE_FILE");
+        raw.stats_enable = boolean("PROXEMBY_STATS_ENABLE");
         // An empty PROXEMBY_STATS_ADDR disables the admin listener.
         raw.stats_addr = env.get("PROXEMBY_STATS_ADDR").cloned();
         raw.stats_file = non_empty("PROXEMBY_STATS_FILE");
@@ -383,6 +393,7 @@ impl Values {
             hide_client: self.hide_client,
             allowed_users: clean_strings(&self.allowed_users),
             auth_state_file: self.auth_state_file.trim().to_owned(),
+            stats_enable: self.stats_enable,
             stats_addr: self.stats_addr,
             stats_file: self.stats_file,
             logging,
@@ -491,6 +502,7 @@ struct TomlConfig {
 
 #[derive(Deserialize, Default)]
 struct TomlStats {
+    enable: Option<bool>,
     addr: Option<String>,
     file: Option<String>,
 }
@@ -574,6 +586,7 @@ fn raw_from_toml_file(path: &str) -> Result<Raw, std::io::Error> {
         hide_client: cfg.proxy.hide_client,
         allowed_users: cfg.auth.allowed_users,
         auth_state_file: cfg.auth.state_file,
+        stats_enable: cfg.stats.enable,
         stats_addr: cfg.stats.addr,
         stats_file: cfg.stats.file,
         debug: cfg.logging.debug,
@@ -623,6 +636,7 @@ const FLAGS: &[(&[&str], &str, FlagKind)] = &[
         "response-header-timeout",
         FlagKind::Int,
     ),
+    (&["stats-enable"], "stats-enable", FlagKind::Bool),
     (&["stats-addr"], "stats-addr", FlagKind::Str),
     (&["stats-file"], "stats-file", FlagKind::Str),
     (&["help"], "help", FlagKind::Bool),
@@ -744,6 +758,7 @@ fn parse_flags(args: &[String]) -> Result<Cli, Error> {
             "log-format" => raw.log_format = Some(value),
             "log-time" => raw.log_time = Some(as_bool(&value)),
             "response-header-timeout" => raw.response_header_timeout = value.trim().parse().ok(),
+            "stats-enable" => raw.stats_enable = Some(as_bool(&value)),
             "stats-addr" => raw.stats_addr = Some(value),
             "stats-file" => raw.stats_file = Some(value),
             "help" => cli.help = as_bool(&value),
@@ -844,6 +859,7 @@ Options:
       --hide-client                  Hide client identity headers from upstream
       --allowed-users USERS          Comma-separated upstream Emby usernames allowed to log in
       --auth-state-file PATH         File used to persist login sessions
+      --stats-enable                 Count traffic per route and kind
       --stats-addr ADDR              Admin listener for traffic statistics; empty disables (default 127.0.0.1:9180)
       --stats-file PATH              File that keeps per-day traffic totals
       --log-level LEVEL              Log level: debug, info, warn, or error
@@ -1032,6 +1048,7 @@ allowed_users = ["ken", " "]
 state_file = "/var/lib/proxemby/auth.json"
 
 [stats]
+enable = true
 addr = "127.0.0.1:9999"
 file = "/var/lib/proxemby/stats.json"
 
@@ -1064,6 +1081,7 @@ time = false
         assert!(cfg.trust_proxy_headers);
         assert_eq!(cfg.allowed_users, vec!["ken"]);
         assert_eq!(cfg.auth_state_file, "/var/lib/proxemby/auth.json");
+        assert!(cfg.stats_enable);
         assert_eq!(cfg.stats_addr, "127.0.0.1:9999");
         assert_eq!(cfg.stats_file, "/var/lib/proxemby/stats.json");
         assert!(cfg.hide_client);
@@ -1250,15 +1268,18 @@ level = "warn"
     fn stats_options() {
         let route = ("PROXEMBY_ROUTE", "https://us.emby.com,http://proxemby");
         let cfg = from_env_map([route]).unwrap();
+        assert!(!cfg.stats_enable);
         assert_eq!(cfg.stats_addr, "127.0.0.1:9180");
         assert_eq!(cfg.stats_file, "");
 
         let cfg = from_env_map([
             route,
+            ("PROXEMBY_STATS_ENABLE", "true"),
             ("PROXEMBY_STATS_ADDR", ""),
             ("PROXEMBY_STATS_FILE", "/tmp/s.json"),
         ])
         .unwrap();
+        assert!(cfg.stats_enable);
         assert_eq!(cfg.stats_addr, "");
         assert_eq!(cfg.stats_file, "/tmp/s.json");
 
@@ -1266,6 +1287,7 @@ level = "warn"
             &[
                 "--route",
                 route.1,
+                "--stats-enable",
                 "--stats-addr",
                 ":9181",
                 "--stats-file",
@@ -1274,6 +1296,7 @@ level = "warn"
             &[],
         )
         .unwrap();
+        assert!(cfg.stats_enable);
         assert_eq!(cfg.stats_addr, ":9181");
         assert_eq!(cfg.stats_file, "s.json");
     }

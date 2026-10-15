@@ -74,8 +74,12 @@ fn main() -> ExitCode {
 
 /// `proxemby stats`: prints the running proxy's traffic statistics.
 fn show_stats(cfg: &Config) -> ExitCode {
+    if !cfg.stats_enable {
+        eprintln!("stats are disabled: set [stats] enable = true in the config");
+        return ExitCode::FAILURE;
+    }
     if cfg.stats_addr.is_empty() {
-        eprintln!("stats are disabled: set [stats] addr in the config");
+        eprintln!("the stats listener is disabled: set [stats] addr in the config");
         return ExitCode::FAILURE;
     }
     match stats::fetch_report(&stats::admin_connect_addr(&cfg.stats_addr)) {
@@ -112,8 +116,11 @@ async fn run(cfg: Config, logger: Logger) -> Result<(), String> {
         );
     }
 
-    let stats_path = (!cfg.stats_file.is_empty()).then(|| Path::new(&cfg.stats_file));
-    let stats = Arc::new(Stats::open(&server::route_names(&cfg), stats_path)?);
+    let mut stats = None;
+    if cfg.stats_enable {
+        let path = (!cfg.stats_file.is_empty()).then(|| Path::new(&cfg.stats_file));
+        stats = Some(Arc::new(Stats::open(&server::route_names(&cfg), path)?));
+    }
     let proxy = Server::with_stats(&cfg, logger.clone(), store, stats.clone());
     let http_listener = server::bind(&cfg.http_addr)
         .await
@@ -126,18 +133,20 @@ async fn run(cfg: Config, logger: Logger) -> Result<(), String> {
         proxy.clone(),
         shutdown.signal(),
     ));
-    if !cfg.stats_addr.is_empty() {
-        let admin = server::bind(&cfg.stats_addr)
-            .await
-            .map_err(|e| format!("listen {}: {e}", cfg.stats_addr))?;
-        info!(logger, "proxemby stats listening", "addr" => cfg.stats_addr.as_str(), "file" => cfg.stats_file.as_str());
-        servers.spawn(server::serve_admin(admin, stats.clone(), shutdown.signal()));
+    if let Some(stats) = &stats {
+        if !cfg.stats_addr.is_empty() {
+            let admin = server::bind(&cfg.stats_addr)
+                .await
+                .map_err(|e| format!("listen {}: {e}", cfg.stats_addr))?;
+            info!(logger, "proxemby stats listening", "addr" => cfg.stats_addr.as_str(), "file" => cfg.stats_file.as_str());
+            servers.spawn(server::serve_admin(admin, stats.clone(), shutdown.signal()));
+        }
+        tokio::spawn(flush_stats(
+            stats.clone(),
+            shutdown.signal(),
+            logger.clone(),
+        ));
     }
-    tokio::spawn(flush_stats(
-        stats.clone(),
-        shutdown.signal(),
-        logger.clone(),
-    ));
     if cfg.tls_enable {
         serve_tls(&cfg, proxy, &shutdown, &mut servers, &logger).await?;
     }
@@ -159,7 +168,7 @@ async fn run(cfg: Config, logger: Logger) -> Result<(), String> {
             "proxemby closed connections still open after the grace period"
         );
     }
-    if let Err(e) = stats.flush() {
+    if let Some(Err(e)) = stats.map(|stats| stats.flush()) {
         warn!(logger, "proxemby stats flush failed", "error" => e);
     }
     result

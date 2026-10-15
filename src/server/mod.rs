@@ -95,7 +95,7 @@ pub struct ConnInfo {
 
 pub struct Server {
     routes: HashMap<String, Arc<RouteProxy>>,
-    stats: Arc<Stats>,
+    stats: Option<Arc<Stats>>,
     logger: Logger,
 }
 
@@ -110,18 +110,22 @@ pub fn route_names(cfg: &Config) -> Vec<String> {
 impl Server {
     /// Builds the server. `store` keeps sessions for the allowed-users check
     /// and is ignored when `cfg.allowed_users` is empty.
+    /// Traffic is counted in memory when `cfg.stats_enable` is set.
     pub fn new(cfg: &Config, logger: Logger, store: Option<Arc<Store>>) -> Arc<Server> {
-        let stats = Arc::new(Stats::memory(&route_names(cfg)));
+        let stats = cfg
+            .stats_enable
+            .then(|| Arc::new(Stats::memory(&route_names(cfg))));
         Server::with_stats(cfg, logger, store, stats)
     }
 
     /// Like [`Server::new`], recording traffic in `stats`, which must have
-    /// been created with [`route_names`] of the same config.
+    /// been created with [`route_names`] of the same config. `None` disables
+    /// traffic statistics.
     pub fn with_stats(
         cfg: &Config,
         logger: Logger,
         store: Option<Arc<Store>>,
-        stats: Arc<Stats>,
+        stats: Option<Arc<Stats>>,
     ) -> Arc<Server> {
         let store = if cfg.allowed_users.is_empty() {
             None
@@ -140,9 +144,11 @@ impl Server {
                     ("upstream_url", route.upstream_url.to_string().into()),
                 ]);
                 let name = route.public_url.hostname().to_ascii_lowercase();
-                let route_stats = stats
-                    .route(&name)
-                    .expect("stats are created from the same routes");
+                let route_stats = stats.as_ref().map(|stats| {
+                    stats
+                        .route(&name)
+                        .expect("stats are created from the same routes")
+                });
                 let proxy = RouteProxy::new(
                     cfg.clone(),
                     route.clone(),
@@ -161,8 +167,9 @@ impl Server {
         })
     }
 
-    pub fn stats(&self) -> &Arc<Stats> {
-        &self.stats
+    /// The traffic statistics, or `None` when they are disabled.
+    pub fn stats(&self) -> Option<&Arc<Stats>> {
+        self.stats.as_ref()
     }
 
     pub async fn handle(&self, req: Request<Incoming>, conn: ConnInfo) -> Response<ProxyBody> {

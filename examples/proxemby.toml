@@ -70,6 +70,10 @@ allowed_users = []
 # state_file = "/var/lib/proxemby/auth.json"
 
 [stats]
+# Count traffic per route and kind. When false, nothing is counted and the
+# options below are ignored.
+enable = false
+
 # Admin listener for `proxemby stats`, /stats and /metrics. Keep it on
 # localhost. Empty disables it.
 addr = "127.0.0.1:9180"
